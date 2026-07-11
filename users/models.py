@@ -1,4 +1,5 @@
 from django.contrib.auth.models import AbstractUser
+from django.contrib.auth.models import AbstractUser
 from django.db import models
 
 
@@ -9,11 +10,6 @@ class Role(models.TextChoices):
 
 
 class User(AbstractUser):
-    """
-    Standart Django foydalanuvchisiga rol maydoni qo'shilgan.
-    Parollar Django tomonidan avtomatik ravishda Argon2 bilan hash qilinadi
-    (settings.py dagi PASSWORD_HASHERS ga qarang) - hech qachon ochiq matnda saqlanmaydi.
-    """
 
     role = models.CharField(max_length=10, choices=Role.choices, default=Role.PATIENT)
     phone = models.CharField(max_length=20, blank=True)

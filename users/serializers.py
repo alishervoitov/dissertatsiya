@@ -86,3 +86,16 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
         data["role"] = self.user.role
         data["user"] = UserPublicSerializer(self.user).data
         return data
+
+
+from rest_framework import serializers
+from .models import User
+
+
+class UserPublicSerializer(serializers.ModelSerializer):
+    """Parolsiz, faqat ochiq profil ma'lumotlari."""
+
+    class Meta:
+        model = User
+        fields = ["id", "username", "first_name", "last_name", "email", "phone", "role", "created_at"]
+        read_only_fields = ["id", "role", "created_at"]

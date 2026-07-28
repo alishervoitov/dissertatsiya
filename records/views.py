@@ -7,7 +7,7 @@ from users.permissions import IsAdmin, IsAdminOrDoctor
 
 from .audit import log_audit
 from .models import AuditLog, MedicalRecord, Patient
-from .permissions import MedicalRecord, PatientObjectPermission
+from .permissions import MedicalRecordObjectPermission, PatientObjectPermission
 from .serializers import (
     AuditLogSerializer,
     MedicalRecordSerializer,

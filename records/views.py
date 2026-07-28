@@ -30,3 +30,14 @@ class PatientListView(generics.ListAPIView):
                 user__last_name__icontains=search
             ) | qs.filter(user__username__icontains=search)
         return qs.order_by("user__first_name")
+
+class MyPatientProfileView(APIView):
+    """Bemorning o'zi tizimga kirganda o'z profilini ko'rishi uchun qisqa yo'l."""
+
+    def get(self, request):
+        try:
+            patient = Patient.objects.get(user=request.user)
+        except Patient.DoesNotExist:
+            return Response({"detail": "Bemor profili topilmadi."}, status=status.HTTP_404_NOT_FOUND)
+        log_audit(request.user, "view", patient=patient, detail="O'z profilini ko'rdi")
+        return Response(PatientSerializer(patient).data)

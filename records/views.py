@@ -102,3 +102,31 @@ class MedicalRecordListCreateView(generics.ListCreateAPIView):
                 log_audit(request.user, "view", patient=patient, detail="Yozuvlar ro'yxati ko'rildi")
         return response
 
+
+class MedicalRecordDetailView(generics.RetrieveUpdateDestroyAPIView):
+    queryset = MedicalRecord.objects.select_related("patient__user", "created_by").all()
+    serializer_class = MedicalRecordSerializer
+    permission_classes = [MedicalRecordObjectPermission]
+
+    def retrieve(self, request, *args, **kwargs):
+        instance = self.get_object()
+        log_audit(
+            request.user, "view", patient=instance.patient, medical_record=instance,
+            detail=f"Yozuv ko'rildi: {instance.title}",
+        )
+        serializer = self.get_serializer(instance)
+        return Response(serializer.data)
+
+    def perform_update(self, serializer):
+        record = serializer.save()
+        log_audit(
+            self.request.user, "update", patient=record.patient, medical_record=record,
+            detail=f"Yozuv tahrirlandi: {record.title}",
+        )
+
+    def perform_destroy(self, instance):
+        log_audit(
+            self.request.user, "delete", patient=instance.patient, medical_record=instance,
+            detail=f"Yozuv o'chirildi: {instance.title}",
+        )
+        instance.delete()

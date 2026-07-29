@@ -41,3 +41,26 @@ class MyPatientProfileView(APIView):
             return Response({"detail": "Bemor profili topilmadi."}, status=status.HTTP_404_NOT_FOUND)
         log_audit(request.user, "view", patient=patient, detail="O'z profilini ko'rdi")
         return Response(PatientSerializer(patient).data)
+
+
+class PatientDetailView(generics.RetrieveUpdateAPIView):
+    """
+    Bitta bemor profili. Har bir ko'rish AuditLog ga yoziladi -
+    bu shifokor/administratorning har bir kirishini kuzatib borish imkonini beradi.
+    """
+
+    queryset = Patient.objects.select_related("user", "primary_doctor").all()
+    serializer_class = PatientSerializer
+    permission_classes = [PatientObjectPermission]
+
+    def retrieve(self, request, *args, **kwargs):
+        instance = self.get_object()
+        actor = request.user
+        detail = "O'z profili" if actor.role == Role.PATIENT else "Bemor kartasi ko'rildi"
+        log_audit(actor, "view", patient=instance, detail=detail)
+        serializer = self.get_serializer(instance)
+        return Response(serializer.data)
+
+    def perform_update(self, serializer):
+        instance = serializer.save()
+        log_audit(self.request.user, "update", patient=instance, detail="Bemor profili tahrirlandi")

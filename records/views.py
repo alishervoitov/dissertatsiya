@@ -64,3 +64,41 @@ class PatientDetailView(generics.RetrieveUpdateAPIView):
     def perform_update(self, serializer):
         instance = serializer.save()
         log_audit(self.request.user, "update", patient=instance, detail="Bemor profili tahrirlandi")
+
+
+class MedicalRecordListCreateView(generics.ListCreateAPIView):
+    serializer_class = MedicalRecordSerializer
+    permission_classes = [MedicalRecordObjectPermission]
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = MedicalRecord.objects.select_related("patient__user", "created_by")
+
+        if user.role == Role.PATIENT:
+            qs = qs.filter(patient__user=user)
+        elif user.role == Role.DOCTOR:
+            pass  # shifokor davolash uchun barcha bemorlar yozuvlarini ko'ra oladi
+        elif user.role == Role.ADMIN:
+            pass  # administrator nazorat uchun ko'ra oladi (faqat o'qish)
+
+        patient_id = self.request.query_params.get("patient")
+        if patient_id:
+            qs = qs.filter(patient_id=patient_id)
+        return qs.order_by("-visit_date")
+
+    def perform_create(self, serializer):
+        record = serializer.save(created_by=self.request.user)
+        log_audit(
+            self.request.user, "create", patient=record.patient, medical_record=record,
+            detail=f"Yangi yozuv: {record.title}",
+        )
+
+    def list(self, request, *args, **kwargs):
+        response = super().list(request, *args, **kwargs)
+        patient_id = request.query_params.get("patient")
+        if patient_id:
+            patient = Patient.objects.filter(id=patient_id).first()
+            if patient:
+                log_audit(request.user, "view", patient=patient, detail="Yozuvlar ro'yxati ko'rildi")
+        return response
+

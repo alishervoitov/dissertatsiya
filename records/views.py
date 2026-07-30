@@ -130,3 +130,16 @@ class MedicalRecordDetailView(generics.RetrieveUpdateDestroyAPIView):
             detail=f"Yozuv o'chirildi: {instance.title}",
         )
         instance.delete()
+
+class AuditLogListView(generics.ListAPIView):
+    """Faqat administrator uchun: tizimdagi barcha kirish/harakatlar tarixi."""
+
+    serializer_class = AuditLogSerializer
+    permission_classes = [IsAdmin]
+
+    def get_queryset(self):
+        qs = AuditLog.objects.select_related("actor", "patient__user").all()
+        patient_id = self.request.query_params.get("patient")
+        if patient_id:
+            qs = qs.filter(patient_id=patient_id)
+        return qs[:500]

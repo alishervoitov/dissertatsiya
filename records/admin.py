@@ -17,7 +17,7 @@ class MedicalRecordAdmin(admin.ModelAdmin):
 
 @admin.register(AuditLog)
 class AuditLogAdmin(admin.ModelAdmin):
-    list_display = ["id", "timestamp", "actor", "action", "patient", "ip_address"]
+    list_display = ["id", "timestamp", "actor", "action", "patient"]
     list_filter = ["action"]
     readonly_fields = [f.name for f in AuditLog._meta.fields]
 

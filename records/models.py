@@ -89,6 +89,7 @@ class AuditLog(models.Model):
         ("delete", "O'chirish"),
         ("login", "Kirish"),
         ("login_failed", "Muvaffaqiyatsiz kirish"),
+        ("export", "Eksport qilish"),
     ]
 
     actor = models.ForeignKey(

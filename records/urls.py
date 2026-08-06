@@ -10,4 +10,5 @@ urlpatterns = [
     path("medical-records/<int:pk>/", views.MedicalRecordDetailView.as_view(), name="record-detail"),
     path("audit-logs/", views.AuditLogListView.as_view(), name="audit-log-list"),
     path("export-anonymized/", views.AnonymizedExportView.as_view(), name="export-anonymized"),
+    path("patients/<int:patient_id>/history-pdf/", views.PatientHistoryPDFView.as_view(), name="patient-history-pdf"),
 ]

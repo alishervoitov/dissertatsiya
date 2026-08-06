@@ -16,7 +16,8 @@ from .serializers import (
 import csv
 from django.http import HttpResponse
 from rest_framework.views import APIView
-
+from django.http import FileResponse
+from .pdf_export import build_patient_history_pdf
 from .anonymization import anonymization_report
 
 class PatientListView(generics.ListAPIView):
@@ -191,3 +192,36 @@ class AnonymizedExportView(APIView):
             return response
 
         return Response(report)
+
+
+
+
+
+class PatientHistoryPDFView(APIView):
+    """
+    Bemor o'z tarixini, yoki shifokor/admin istalgan bemor tarixini
+    PDF hujjat sifatida yuklab olishi uchun.
+    """
+
+    def get(self, request, patient_id):
+        try:
+            patient = Patient.objects.select_related("user").get(id=patient_id)
+        except Patient.DoesNotExist:
+            return Response({"detail": "Bemor topilmadi."}, status=status.HTTP_404_NOT_FOUND)
+
+        # Ruxsat tekshiruvi: bemor faqat o'zinikini, shifokor/admin istalganini
+        user = request.user
+        if user.role == Role.PATIENT and patient.user_id != user.id:
+            return Response({"detail": "Ruxsat berilmagan."}, status=status.HTTP_403_FORBIDDEN)
+
+        records = MedicalRecord.objects.filter(patient=patient).select_related("created_by").order_by("-visit_date")
+
+        pdf_buffer = build_patient_history_pdf(patient, records)
+
+        log_audit(
+            user, "export", patient=patient,
+            detail="Kasallik tarixi PDF sifatida yuklab olindi",
+        )
+
+        filename = f"kasallik_tarixi_{patient.user.username}.pdf"
+        return FileResponse(pdf_buffer, as_attachment=True, filename=filename, content_type="application/pdf")

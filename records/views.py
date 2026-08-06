@@ -1,6 +1,5 @@
 from rest_framework import generics, status
 from rest_framework.response import Response
-from rest_framework.views import APIView
 
 from users.models import Role
 from users.permissions import IsAdmin, IsAdminOrDoctor
@@ -14,7 +13,11 @@ from .serializers import (
     PatientListSerializer,
     PatientSerializer,
 )
+import csv
+from django.http import HttpResponse
+from rest_framework.views import APIView
 
+from .anonymization import anonymization_report
 
 class PatientListView(generics.ListAPIView):
     """Shifokor/administrator uchun barcha bemorlar ro'yxati (qidiruv bilan)."""
@@ -143,3 +146,48 @@ class AuditLogListView(generics.ListAPIView):
         if patient_id:
             qs = qs.filter(patient_id=patient_id)
         return qs[:500]
+
+
+
+
+
+class AnonymizedExportView(APIView):
+    permission_classes = [IsAdmin]
+
+    ALL_QI = ("age_group", "gender", "blood_type")
+
+    def get(self, request):
+        try:
+            k = int(request.query_params.get("k", 5))
+        except ValueError:
+            k = 5
+        k = max(2, min(k, 50))
+
+        qi_param = request.query_params.get("qi")
+        if qi_param:
+            quasi_identifiers = tuple(q for q in qi_param.split(",") if q in self.ALL_QI)
+            if not quasi_identifiers:
+                quasi_identifiers = self.ALL_QI
+        else:
+            quasi_identifiers = self.ALL_QI
+
+        report = anonymization_report(Patient.objects.all(), k=k, quasi_identifiers=quasi_identifiers)
+
+        log_audit(
+            request.user, "export",
+            detail=f"Anonimlashtirilgan dataset eksport qilindi (k={k}, qi={quasi_identifiers})",
+        )
+
+        if request.query_params.get("format") == "csv":
+            response = HttpResponse(content_type="text/csv")
+            response["Content-Disposition"] = f'attachment; filename="anon_dataset_k{k}.csv"'
+            writer = csv.writer(response)
+            writer.writerow(["yosh_oralig'i", "jinsi", "qon_guruhi", "yozuvlar_soni", "tibbiy_toifalar"])
+            for row in report["dataset"]:
+                writer.writerow([
+                    row["age_group"], row["gender"], row["blood_type"],
+                    row["records_count"], "; ".join(row["record_types"]),
+                ])
+            return response
+
+        return Response(report)

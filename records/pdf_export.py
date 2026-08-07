@@ -2,6 +2,7 @@
 Bemorning kasallik tarixini PDF hujjat sifatida generatsiya qilish.
 """
 
+import os
 from io import BytesIO
 
 from reportlab.lib import colors
@@ -9,7 +10,7 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.platypus import (
-    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak,
+    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image,
 )
 
 RECORD_TYPE_LABELS = {
@@ -19,6 +20,25 @@ RECORD_TYPE_LABELS = {
     "lab_result": "Laboratoriya natijasi",
     "procedure": "Muolaja",
 }
+
+
+def _get_avatar_flowable(user, size=28 * mm):
+    """
+    Foydalanuvchi avatarini PDF ichiga joylashtirish uchun tayyorlaydi.
+    Agar rasm bo'lmasa yoki fayl topilmasa, None qaytaradi (xatolik bermaydi).
+    """
+    if not user.avatar or not hasattr(user.avatar, "path"):
+        return None
+    try:
+        if not os.path.exists(user.avatar.path):
+            return None
+        img = Image(user.avatar.path, width=size, height=size)
+        img.hAlign = "LEFT"
+        return img
+    except Exception:
+        # Rasm buzilgan yoki formatini o'qib bo'lmasa, PDF generatsiyasi
+        # to'xtamasligi kerak - shunchaki avatarsiz davom etamiz
+        return None
 
 
 def build_patient_history_pdf(patient, records):
@@ -55,12 +75,31 @@ def build_patient_history_pdf(patient, records):
     elements = []
 
     full_name = f"{patient.user.first_name} {patient.user.last_name}".strip() or patient.user.username
-    elements.append(Paragraph("Bemor kasallik tarixi", title_style))
-    elements.append(Paragraph(
-        f"MedKarta tizimi orqali generatsiya qilingan hujjat. "
-        f"Ushbu hujjat maxfiy ma'lumotlarni o'z ichiga oladi.",
+
+    # --- Sarlavha va avatar bitta qatorda (jadval orqali) ---
+    header_title = Paragraph("Bemor kasallik tarixi", title_style)
+    header_meta = Paragraph(
+        "MedKarta tizimi orqali generatsiya qilingan hujjat. "
+        "Ushbu hujjat maxfiy ma'lumotlarni o'z ichiga oladi.",
         meta_style,
-    ))
+    )
+    avatar = _get_avatar_flowable(patient.user)
+
+    if avatar:
+        header_table = Table(
+            [[[header_title, header_meta], avatar]],
+            colWidths=[125 * mm, 30 * mm],
+        )
+        header_table.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("ALIGN", (1, 0), (1, 0), "RIGHT"),
+        ]))
+        elements.append(header_table)
+    else:
+        elements.append(header_title)
+        elements.append(header_meta)
+
+    elements.append(Spacer(1, 6 * mm))
 
     # Bemor profili jadvali
     profile_data = [

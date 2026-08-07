@@ -13,6 +13,7 @@ class User(AbstractUser):
 
     role = models.CharField(max_length=10, choices=Role.choices, default=Role.PATIENT)
     phone = models.CharField(max_length=20, blank=True)
+    avatar = models.ImageField(upload_to="avatars/", blank=True, null=True)
     is_active_2fa = models.BooleanField(
         default=False, help_text="Kelajakda ikki bosqichli autentifikatsiya uchun"
     )

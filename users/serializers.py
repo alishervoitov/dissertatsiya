@@ -95,7 +95,15 @@ from .models import User
 class UserPublicSerializer(serializers.ModelSerializer):
     """Parolsiz, faqat ochiq profil ma'lumotlari."""
 
+    avatar_url = serializers.SerializerMethodField()
+
     class Meta:
         model = User
-        fields = ["id", "username", "first_name", "last_name", "email", "phone", "role", "created_at"]
+        fields = ["id", "username", "first_name", "last_name", "email", "phone", "role", "avatar_url", "created_at"]
         read_only_fields = ["id", "role", "created_at"]
+
+    def get_avatar_url(self, obj):
+        request = self.context.get("request")
+        if obj.avatar and request:
+            return request.build_absolute_uri(obj.avatar.url)
+        return None

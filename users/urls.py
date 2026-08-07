@@ -11,4 +11,5 @@ urlpatterns = [
     path("me/", views.MeView.as_view(), name="me"),
     path("users/", views.AdminUserListCreateView.as_view(), name="admin-users"),
     path("users/<int:pk>/", views.AdminUserDetailView.as_view(), name="admin-user-detail"),
+    path("me/avatar/", views.AvatarUploadView.as_view(), name="avatar-upload"),
 ]

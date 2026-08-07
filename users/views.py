@@ -81,12 +81,10 @@ class LogoutView(APIView):
 
 
 class MeView(APIView):
-    """Joriy tizimga kirgan foydalanuvchi haqida ma'lumot."""
-
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        return Response(UserPublicSerializer(request.user).data)
+        return Response(UserPublicSerializer(request.user, context={"request": request}).data)
 
 
 class AdminUserListCreateView(generics.ListCreateAPIView):
@@ -117,3 +115,27 @@ class AdminUserDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset = User.objects.all()
     serializer_class = UserPublicSerializer
     permission_classes = [IsAdmin]
+
+from rest_framework.parsers import MultiPartParser, FormParser
+
+
+class AvatarUploadView(APIView):
+    """Joriy foydalanuvchi o'z avatarini yuklaydi/yangilaydi."""
+
+    permission_classes = [permissions.IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request):
+        avatar = request.FILES.get("avatar")
+        if not avatar:
+            return Response({"detail": "Rasm fayli topilmadi."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if avatar.size > 5 * 1024 * 1024:  # 5 MB chegarasi
+            return Response({"detail": "Fayl hajmi 5 MB dan oshmasligi kerak."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not avatar.content_type.startswith("image/"):
+            return Response({"detail": "Faqat rasm fayllari qabul qilinadi."}, status=status.HTTP_400_BAD_REQUEST)
+
+        request.user.avatar = avatar
+        request.user.save()
+        return Response(UserPublicSerializer(request.user, context={"request": request}).data)

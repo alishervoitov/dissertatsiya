@@ -14,6 +14,8 @@ class User(AbstractUser):
     role = models.CharField(max_length=10, choices=Role.choices, default=Role.PATIENT)
     phone = models.CharField(max_length=20, blank=True)
     avatar = models.ImageField(upload_to="avatars/", blank=True, null=True)
+    failed_login_attempts = models.PositiveIntegerField(default=0)
+    locked_until = models.DateTimeField(null=True, blank=True)
     is_active_2fa = models.BooleanField(
         default=False, help_text="Kelajakda ikki bosqichli autentifikatsiya uchun"
     )

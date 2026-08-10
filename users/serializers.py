@@ -71,9 +71,17 @@ class AdminCreateUserSerializer(serializers.ModelSerializer):
         return user
 
 
-class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
-    """Login javobiga foydalanuvchi rolini ham qo'shib beradi."""
+from datetime import timedelta
 
+from django.utils import timezone
+from rest_framework import serializers
+from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
+
+MAX_FAILED_ATTEMPTS = 5
+LOCKOUT_DURATION = timedelta(minutes=15)
+
+
+class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
     @classmethod
     def get_token(cls, user):
         token = super().get_token(user)
@@ -82,9 +90,35 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
         return token
 
     def validate(self, attrs):
-        data = super().validate(attrs)
+        username = attrs.get("username")
+        user = User.objects.filter(username=username).first()
+
+        if user and user.is_locked:
+            remaining = int((user.locked_until - timezone.now()).total_seconds() / 60) + 1
+            raise serializers.ValidationError(
+                f"Hisob vaqtincha bloklangan. {remaining} daqiqadan so'ng qayta urinib ko'ring."
+            )
+
+        try:
+            data = super().validate(attrs)
+        except Exception:
+            # Muvaffaqiyatsiz urinish - hisoblagichni oshiramiz
+            if user:
+                user.failed_login_attempts += 1
+                if user.failed_login_attempts >= MAX_FAILED_ATTEMPTS:
+                    user.locked_until = timezone.now() + LOCKOUT_DURATION
+                    user.failed_login_attempts = 0
+                user.save(update_fields=["failed_login_attempts", "locked_until"])
+            raise
+
+        # Muvaffaqiyatli login - hisoblagichni tozalaymiz
+        if user:
+            user.failed_login_attempts = 0
+            user.locked_until = None
+            user.save(update_fields=["failed_login_attempts", "locked_until"])
+
         data["role"] = self.user.role
-        data["user"] = UserPublicSerializer(self.user).data
+        data["user"] = UserPublicSerializer(self.user, context=self.context).data
         return data
 
 

@@ -1,5 +1,4 @@
 from django.contrib.auth.models import AbstractUser
-from django.contrib.auth.models import AbstractUser
 from django.db import models
 
 
@@ -35,3 +34,8 @@ class User(AbstractUser):
     @property
     def is_patient(self):
         return self.role == Role.PATIENT
+
+    @property
+    def is_locked(self):
+        from django.utils import timezone
+        return bool(self.locked_until and self.locked_until > timezone.now())

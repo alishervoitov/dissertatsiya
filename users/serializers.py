@@ -2,7 +2,12 @@ from django.contrib.auth import password_validation
 from django.db import transaction
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
-
+from rest_framework import serializers
+from .models import User
+from datetime import timedelta
+from django.utils import timezone
+from rest_framework import serializers
+from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from .models import Role, User
 
 
@@ -71,11 +76,7 @@ class AdminCreateUserSerializer(serializers.ModelSerializer):
         return user
 
 
-from datetime import timedelta
 
-from django.utils import timezone
-from rest_framework import serializers
-from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
 MAX_FAILED_ATTEMPTS = 5
 LOCKOUT_DURATION = timedelta(minutes=15)
@@ -120,11 +121,6 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
         data["role"] = self.user.role
         data["user"] = UserPublicSerializer(self.user, context=self.context).data
         return data
-
-
-from rest_framework import serializers
-from .models import User
-
 
 class UserPublicSerializer(serializers.ModelSerializer):
     """Parolsiz, faqat ochiq profil ma'lumotlari."""

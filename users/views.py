@@ -1,14 +1,11 @@
 from django.shortcuts import render
-
 import logging
-
 from rest_framework import generics, permissions, status
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView
-
 from .models import User
 from .permissions import IsAdmin
 from .serializers import (
@@ -17,7 +14,13 @@ from .serializers import (
     RegisterSerializer,
     UserPublicSerializer,
 )
-
+from django.contrib.auth.tokens import default_token_generator
+from django.core.mail import send_mail
+from django.conf import settings
+from django.utils.encoding import force_bytes, force_str
+from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError as DjangoValidationError
 security_logger = logging.getLogger("security")
 
 
@@ -139,3 +142,85 @@ class AvatarUploadView(APIView):
         request.user.avatar = avatar
         request.user.save()
         return Response(UserPublicSerializer(request.user, context={"request": request}).data)
+
+
+
+
+
+class PasswordResetRequestView(APIView):
+    """
+    Email manzil orqali parolni tiklash havolasini yuboradi.
+    Xavfsizlik uchun: email tizimda bormi-yo'qmi - bir xil javob qaytariladi
+    (bu orqali kimning ro'yxatdan o'tganini "sinab ko'rish" imkoniyati yo'qoladi).
+    """
+
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "password_reset"
+
+    def post(self, request):
+        email = request.data.get("email", "").strip()
+        generic_response = Response(
+            {"detail": "Agar shu email bilan hisob mavjud bo'lsa, tiklash havolasi yuborildi."}
+        )
+
+        if not email:
+            return Response({"detail": "Email kiritilishi shart."}, status=status.HTTP_400_BAD_REQUEST)
+
+        user = User.objects.filter(email__iexact=email).first()
+        if not user:
+            security_logger.info("Parolni tiklash so'ralgan, lekin email topilmadi: %s", email)
+            return generic_response
+
+        uid = urlsafe_base64_encode(force_bytes(user.pk))
+        token = default_token_generator.make_token(user)
+        reset_link = f"{settings.FRONTEND_URL}/reset-password/{uid}/{token}/"
+
+        send_mail(
+            subject="MedKarta — Parolni tiklash",
+            message=(
+                f"Salom, {user.get_full_name() or user.username}!\n\n"
+                f"Parolingizni tiklash uchun quyidagi havolaga o'ting:\n{reset_link}\n\n"
+                f"Agar buni siz so'ramagan bo'lsangiz, bu xabarni e'tiborsiz qoldiring."
+            ),
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=[user.email],
+        )
+        security_logger.info("Parolni tiklash havolasi yuborildi: %s", user.username)
+        return generic_response
+
+
+class PasswordResetConfirmView(APIView):
+    """Havoladagi uid/token asosida yangi parolni o'rnatadi."""
+
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        uid = request.data.get("uid")
+        token = request.data.get("token")
+        new_password = request.data.get("new_password")
+
+        if not all([uid, token, new_password]):
+            return Response({"detail": "Barcha maydonlar to'ldirilishi shart."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            user_id = force_str(urlsafe_base64_decode(uid))
+            user = User.objects.get(pk=user_id)
+        except (User.DoesNotExist, ValueError, TypeError, OverflowError):
+            return Response({"detail": "Havola yaroqsiz."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not default_token_generator.check_token(user, token):
+            return Response({"detail": "Havola yaroqsiz yoki muddati tugagan."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            validate_password(new_password, user=user)
+        except DjangoValidationError as e:
+            return Response({"detail": list(e.messages)}, status=status.HTTP_400_BAD_REQUEST)
+
+        user.set_password(new_password)
+        user.failed_login_attempts = 0
+        user.locked_until = None
+        user.save()
+
+        security_logger.info("Parol muvaffaqiyatli tiklandi: %s", user.username)
+        return Response({"detail": "Parol muvaffaqiyatli yangilandi."})

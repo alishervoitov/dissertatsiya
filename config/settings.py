@@ -141,6 +141,7 @@ REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_RATES": {
         "login": "5/min",
         "register": "10/hour",
+        "password_reset": "5/hour",
     },
     "DEFAULT_RENDERER_CLASSES": (
         "rest_framework.renderers.JSONRenderer",
@@ -153,3 +154,11 @@ CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
 ]
+
+
+# Development uchun: email yuborish o'rniga, matnini terminalga chiqaradi
+EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
+DEFAULT_FROM_EMAIL = "noreply@medkarta.local"
+
+# Frontend manzili - parolni tiklash havolasi shu yerga yo'naltiriladi
+FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:3000")

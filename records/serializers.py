@@ -2,6 +2,7 @@ from rest_framework import serializers
 from users.serializers import UserPublicSerializer
 from .models import AuditLog, MedicalRecord, Patient
 from .models import RecordAttachment
+from .models import Prescription
 
 class PatientSerializer(serializers.ModelSerializer):
     user = UserPublicSerializer(read_only=True)
@@ -72,3 +73,18 @@ class RecordAttachmentSerializer(serializers.ModelSerializer):
             "file_size", "uploaded_by_name", "uploaded_at",
         ]
         read_only_fields = ["id", "content_type", "file_size", "uploaded_by_name", "uploaded_at"]
+
+
+class PrescriptionSerializer(serializers.ModelSerializer):
+    prescribed_by_name = serializers.CharField(source="prescribed_by.get_full_name", read_only=True)
+    patient_name = serializers.CharField(source="patient.user.get_full_name", read_only=True)
+    frequency_display = serializers.CharField(source="get_frequency_display", read_only=True)
+
+    class Meta:
+        model = Prescription
+        fields = [
+            "id", "patient", "patient_name", "medical_record", "prescribed_by", "prescribed_by_name",
+            "medication_name", "dosage", "frequency", "frequency_display", "duration_days",
+            "instructions", "start_date", "is_active", "created_at", "updated_at",
+        ]
+        read_only_fields = ["id", "prescribed_by", "created_at", "updated_at"]

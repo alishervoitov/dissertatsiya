@@ -112,7 +112,7 @@ class AuditLog(models.Model):
 
     def __str__(self):
         return f"[{self.timestamp:%Y-%m-%d %H:%M}] {self.actor} -> {self.action}"
-      
+
 
 
 def attachment_upload_path(instance, filename):
@@ -145,3 +145,47 @@ class RecordAttachment(models.Model):
 
     def __str__(self):
         return f"{self.original_filename} ({self.record})"
+
+
+class Prescription(models.Model):
+    """
+    Bemorga tayinlangan dori-darmon retsepti. MedicalRecord'dan alohida,
+    chunki bitta tashrifda bir nechta dori tayinlanishi, va dori qabul
+    qilish holati (faol/tugagan) alohida kuzatilishi mumkin.
+    """
+
+    FREQUENCY_CHOICES = [
+        ("once", "Bir marta"),
+        ("daily_1", "Kuniga 1 marta"),
+        ("daily_2", "Kuniga 2 marta"),
+        ("daily_3", "Kuniga 3 marta"),
+        ("daily_4", "Kuniga 4 marta"),
+        ("weekly", "Haftada bir marta"),
+        ("as_needed", "Zarurat bo'yicha"),
+    ]
+
+    patient = models.ForeignKey(Patient, on_delete=models.CASCADE, related_name="prescriptions")
+    medical_record = models.ForeignKey(
+        MedicalRecord, on_delete=models.SET_NULL, null=True, blank=True, related_name="prescriptions"
+    )
+    prescribed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="issued_prescriptions"
+    )
+
+    medication_name = models.CharField(max_length=200)
+    dosage = models.CharField(max_length=100, help_text="Masalan: 500mg")
+    frequency = models.CharField(max_length=20, choices=FREQUENCY_CHOICES, default="daily_1")
+    duration_days = models.PositiveIntegerField(help_text="Necha kun davomida qabul qilinadi")
+    instructions = EncryptedTextField(blank=True, help_text="Qo'shimcha ko'rsatmalar")
+
+    start_date = models.DateField()
+    is_active = models.BooleanField(default=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-start_date", "-created_at"]
+
+    def __str__(self):
+        return f"{self.medication_name} - {self.patient} ({self.start_date})"

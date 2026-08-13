@@ -26,6 +26,10 @@ from rest_framework.parsers import MultiPartParser
 from .models import RecordAttachment
 from .serializers import RecordAttachmentSerializer
 
+from .models import Prescription
+from .permissions import PrescriptionObjectPermission
+from .serializers import PrescriptionSerializer
+
 class PatientListView(generics.ListAPIView):
     """Shifokor/administrator uchun barcha bemorlar ro'yxati (qidiruv bilan)."""
 
@@ -333,3 +337,48 @@ class AttachmentDownloadView(APIView):
         attachment.delete()
         log_audit(user, "delete", patient=patient, medical_record=record, detail=detail)
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+
+class PrescriptionListCreateView(generics.ListCreateAPIView):
+    serializer_class = PrescriptionSerializer
+    permission_classes = [PrescriptionObjectPermission]
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = Prescription.objects.select_related("patient__user", "prescribed_by")
+
+        if user.role == Role.PATIENT:
+            qs = qs.filter(patient__user=user)
+
+        patient_id = self.request.query_params.get("patient")
+        if patient_id:
+            qs = qs.filter(patient_id=patient_id)
+        return qs.order_by("-start_date")
+
+    def perform_create(self, serializer):
+        prescription = serializer.save(prescribed_by=self.request.user)
+        log_audit(
+            self.request.user, "create", patient=prescription.patient,
+            detail=f"Retsept yozildi: {prescription.medication_name}",
+        )
+
+
+class PrescriptionDetailView(generics.RetrieveUpdateDestroyAPIView):
+    queryset = Prescription.objects.select_related("patient__user", "prescribed_by").all()
+    serializer_class = PrescriptionSerializer
+    permission_classes = [PrescriptionObjectPermission]
+
+    def perform_update(self, serializer):
+        prescription = serializer.save()
+        log_audit(
+            self.request.user, "update", patient=prescription.patient,
+            detail=f"Retsept tahrirlandi: {prescription.medication_name}",
+        )
+
+    def perform_destroy(self, instance):
+        log_audit(
+            self.request.user, "delete", patient=instance.patient,
+            detail=f"Retsept o'chirildi: {instance.medication_name}",
+        )
+        instance.delete()

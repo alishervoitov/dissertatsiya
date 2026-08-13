@@ -13,4 +13,6 @@ urlpatterns = [
     path("patients/<int:patient_id>/history-pdf/", views.PatientHistoryPDFView.as_view(), name="patient-history-pdf"),
     path("medical-records/<int:record_id>/attachments/", views.RecordAttachmentListCreateView.as_view(), name="attachment-list-create"),
     path("attachments/<int:attachment_id>/", views.AttachmentDownloadView.as_view(), name="attachment-download"),
+    path("prescriptions/", views.PrescriptionListCreateView.as_view(), name="prescription-list-create"),
+    path("prescriptions/<int:pk>/", views.PrescriptionDetailView.as_view(), name="prescription-detail"),
 ]

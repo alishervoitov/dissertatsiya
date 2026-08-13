@@ -1,9 +1,7 @@
 from rest_framework import serializers
-
 from users.serializers import UserPublicSerializer
-
 from .models import AuditLog, MedicalRecord, Patient
-
+from .models import RecordAttachment
 
 class PatientSerializer(serializers.ModelSerializer):
     user = UserPublicSerializer(read_only=True)
@@ -61,3 +59,16 @@ class AuditLogSerializer(serializers.ModelSerializer):
             "id", "actor", "actor_name", "action", "patient", "patient_name",
             "medical_record", "detail", "ip_address", "user_agent", "timestamp",
         ]
+
+
+
+class RecordAttachmentSerializer(serializers.ModelSerializer):
+    uploaded_by_name = serializers.CharField(source="uploaded_by.get_full_name", read_only=True)
+
+    class Meta:
+        model = RecordAttachment
+        fields = [
+            "id", "record", "original_filename", "content_type",
+            "file_size", "uploaded_by_name", "uploaded_at",
+        ]
+        read_only_fields = ["id", "content_type", "file_size", "uploaded_by_name", "uploaded_at"]

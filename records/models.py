@@ -2,7 +2,7 @@ from django.conf import settings
 from django.db import models
 
 from .encryption import EncryptedCharField, EncryptedTextField
-
+from .storage import protected_storage
 
 class Patient(models.Model):
     """Bemor profili. Foydalanuvchi hisobi bilan bir-birga bog'langan (1:1)."""
@@ -112,3 +112,36 @@ class AuditLog(models.Model):
 
     def __str__(self):
         return f"[{self.timestamp:%Y-%m-%d %H:%M}] {self.actor} -> {self.action}"
+      
+
+
+def attachment_upload_path(instance, filename):
+    return f"attachments/{instance.record.patient_id}/{filename}"
+
+class RecordAttachment(models.Model):
+    """
+    Tibbiy yozuvga biriktirilgan fayl (rentgen, tahlil natijasi, boshqa
+    hujjat). Fayl himoyalangan xotirada saqlanadi va faqat ruxsat
+    tekshiruvidan o'tgan foydalanuvchiga beriladi.
+    """
+
+    ALLOWED_CONTENT_TYPES = [
+        "image/jpeg", "image/png", "image/webp", "application/pdf",
+    ]
+    MAX_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
+
+    record = models.ForeignKey(MedicalRecord, on_delete=models.CASCADE, related_name="attachments")
+    file = models.FileField(upload_to=attachment_upload_path, storage=protected_storage)
+    original_filename = models.CharField(max_length=255)
+    content_type = models.CharField(max_length=100)
+    file_size = models.PositiveIntegerField()
+    uploaded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, related_name="uploaded_attachments"
+    )
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-uploaded_at"]
+
+    def __str__(self):
+        return f"{self.original_filename} ({self.record})"

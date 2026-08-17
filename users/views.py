@@ -176,15 +176,9 @@ class PasswordResetRequestView(APIView):
         token = default_token_generator.make_token(user)
         reset_link = f"{settings.FRONTEND_URL}/reset-password/{uid}/{token}/"
 
-        send_mail(
-            subject="MedKarta — Parolni tiklash",
-            message=(
-                f"Salom, {user.get_full_name() or user.username}!\n\n"
-                f"Parolingizni tiklash uchun quyidagi havolaga o'ting:\n{reset_link}\n\n"
-                f"Agar buni siz so'ramagan bo'lsangiz, bu xabarni e'tiborsiz qoldiring."
-            ),
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=[user.email],
+        from .tasks import send_password_reset_email
+        send_password_reset_email.delay(
+            user.email, user.get_full_name() or user.username, reset_link,
         )
         security_logger.info("Parolni tiklash havolasi yuborildi: %s", user.username)
         return generic_response

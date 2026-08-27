@@ -16,6 +16,7 @@ RUN pip install --no-cache-dir -r requirements.txt gunicorn
 COPY . .
 
 RUN chmod +x /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh /app/wait-for-db.sh
 
 EXPOSE 8000
 

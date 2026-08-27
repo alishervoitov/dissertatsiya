@@ -36,6 +36,7 @@ services:
 
   celery_worker:
     build: .
+    entrypoint: ["/app/wait-for-db.sh"]
     command: celery -A config worker -l info
     env_file: .env.docker
     volumes:
@@ -46,6 +47,7 @@ services:
 
   celery_beat:
     build: .
+    entrypoint: ["/app/wait-for-db.sh"]
     command: celery -A config beat -l info
     env_file: .env.docker
     depends_on:

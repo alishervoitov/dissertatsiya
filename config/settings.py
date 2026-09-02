@@ -15,6 +15,8 @@ load_dotenv()
 from pathlib import Path
 from dotenv import load_dotenv
 
+
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")
 
@@ -30,7 +32,7 @@ DEBUG = True
 
 ALLOWED_HOSTS = []
 
-
+DJANGO_REDIS_IGNORE_EXCEPTIONS = True
 # Application definition
 
 INSTALLED_APPS = [
@@ -174,7 +176,10 @@ CACHES = {
     "default": {
         "BACKEND": "django_redis.cache.RedisCache",
         "LOCATION": REDIS_URL,
-        "OPTIONS": {"CLIENT_CLASS": "django_redis.client.DefaultClient"},
+        "OPTIONS": {
+            "CLIENT_CLASS": "django_redis.client.DefaultClient",
+            "IGNORE_EXCEPTIONS": True,
+        },
     }
 }
 

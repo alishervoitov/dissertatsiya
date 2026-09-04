@@ -4,103 +4,139 @@ Tibbiy ma'lumotlar xavfsizligini ta'minlovchi bemorlar kasallik tarixini boshqar
 
 ## Texnologiyalar
 
-- **Python 3.14** / **Django 6.0**
+- **Python 3.13** / **Django 6.0**
 - **Django REST Framework** — RESTful API
-- **PostgreSQL** — ma'lumotlar bazasi
+- **PostgreSQL 16** — asosiy ma'lumotlar bazasi
+- **Redis** — kesh va Celery uchun vositachi (broker)
+- **Celery + Celery Beat** — fon vazifalari va davriy jarayonlar
 - **djangorestframework-simplejwt** — JWT autentifikatsiya
 - **cryptography (Fernet)** — maydon darajasida shifrlash (AES-128)
-- **django-cors-headers** — CORS boshqaruvi
+- **ReportLab** — PDF hujjatlar generatsiyasi
+- **pytest-django** — avtomatik testlar
+- **Docker / Docker Compose** — konteynerlashtirish
 
 ## Asosiy imkoniyatlar
 
 - 🔐 **JWT autentifikatsiya** — qisqa muddatli access token, rotatsiyalanuvchi refresh token
 - 👥 **Rolga asoslangan kirishni boshqarish (RBAC)** — bemor / shifokor / administrator
-- 🔒 **Ma'lumotlarni shifrlash** — tashxis, davolash, shaxsiy ma'lumotlar bazada Fernet (AES-128) bilan shifrlangan holda saqlanadi
-- 📋 **Audit jurnali** — barcha ko'rish/yaratish/tahrirlash harakatlari o'zgartirib bo'lmaydigan holda qayd etiladi (kim, qachon, qaysi IP'dan)
-- 🛡 **Brute-force himoyasi** — login urinishlari tezlikni cheklash (throttling) orqali cheklangan
-- 📊 **k-anonimlik moduli** — bemorlar ma'lumotlarini tadqiqot/statistika uchun anonimlashtirish (k-anonimlik, l-diversity ko'rsatkichlari bilan)
+- 🔒 **Ma'lumotlarni shifrlash** — tashxis, davolash, retsept ko'rsatmalari, shaxsiy ma'lumotlar bazada Fernet (AES-128) bilan shifrlangan holda saqlanadi
+- 📋 **Audit jurnali** — barcha ko'rish/yaratish/tahrirlash/eksport harakatlari o'zgartirib bo'lmaydigan holda qayd etiladi (kim, qachon, qaysi IP'dan)
+- 🛡 **Ko'p qatlamli brute-force himoyasi** — IP darajasidagi tezlik cheklovi (throttling) + hisobni vaqtincha bloklash (account lockout)
+- 🔑 **Parolni tiklash** — email orqali, Celery fon vazifasi sifatida yuboriladi
+- 📎 **Fayl biriktirish** — rentgen, tahlil natijalari (JPEG/PNG/PDF), himoyalangan xotirada saqlanadi
+- 💊 **Retsept moduli** — dori-darmon tayinlash, avtomatik muddat tugashi (Celery Beat orqali)
+- 📄 **PDF eksport** — bemor kasallik tarixini yuklab olish
+- 📊 **k-anonimlik moduli** — bemorlar ma'lumotlarini tadqiqot/statistika uchun anonimlashtirish (k-anonimlik, l-diversity ko'rsatkichlari, CSV eksport)
 
-## O'rnatish
+## O'rnatish — Docker orqali (tavsiya etiladi)
 
-### 1. Repozitoriyni klonlash
+Butun tizim (PostgreSQL, Redis, Django, Celery worker, Celery beat) bitta buyruq bilan ishga tushadi:
 
-\`\`\`bash
+```bash
 git clone <repo-url>
 cd dissertatsiya
-\`\`\`
+cp .env.example .env.docker   # qiymatlarni to'ldiring
+docker-compose up --build
+```
 
-### 2. Virtual muhit va kutubxonalar
+Birinchi ishga tushirishdan keyin, yangi terminalda superuser yarating:
+```bash
+docker-compose exec backend python manage.py createsuperuser
+```
 
-\`\`\`bash
+- Backend: `http://localhost:8000`
+- API: `http://localhost:8000/api/`
+
+## O'rnatish — mahalliy (Docker'siz)
+
+### 1. Virtual muhit va kutubxonalar
+
+```bash
 python -m venv .venv
 .venv\Scripts\activate          # Windows
 pip install -r requirements.txt
-\`\`\`
+```
 
-### 3. PostgreSQL bazasini sozlash
+### 2. PostgreSQL va Redis'ni ishga tushiring
 
-PostgreSQL'da yangi baza yarating:
-
-\`\`\`sql
+PostgreSQL'da baza yarating:
+```sql
 CREATE DATABASE dissertatsiya;
-\`\`\`
+```
 
-### 4. `.env` faylini sozlash
+Redis (Docker orqali eng sodda yo'l):
+```bash
+docker run -d -p 6379:6379 --name redis redis:7-alpine
+```
 
-Loyiha ildizida `.env` fayl yarating (`.env.example`dan nusxa oling):
+### 3. `.env` faylini sozlash
 
-\`\`\`
-SECRET_KEY=your-secret-key-here
+`.env.example`dan nusxa oling va to'ldiring:
+SECRET_KEY=django-insecure-_l*f-w+hfl&p^e4sv_z^3lwety1xga-i*%wst$t%s1ber^7l$l
 DEBUG=True
-FIELD_ENCRYPTION_KEY=your-fernet-key-here
+FIELD_ENCRYPTION_KEY=YlMT5644toOKzfltvg_G9KUQgyVBTYNKeGDnehsRjKc=
 
 DB_NAME=dissertatsiya
-DB_USER=postgres
-DB_PASSWORD=your-password
+DB_USER=111
+DB_PASSWORD=2222
 DB_HOST=127.0.0.1
 DB_PORT=5432
 
-CORS_ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
-\`\`\`
 
 Shifrlash kalitini generatsiya qilish:
-\`\`\`bash
+```bash
 python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-\`\`\`
+```
 
-### 5. Migratsiya va superuser
+### 4. Migratsiya va superuser
 
-\`\`\`bash
+```bash
 python manage.py migrate
 python manage.py createsuperuser
-\`\`\`
+```
 
-### 6. Serverni ishga tushirish
+### 5. Serverni ishga tushirish
 
-\`\`\`bash
+```bash
 python manage.py runserver
-\`\`\`
+```
 
-API `http://127.0.0.1:8000/api/` manzilida ishga tushadi.
+Celery worker va beat (alohida terminallarda):
+```bash
+celery -A config worker -l info --pool=solo
+celery -A config beat -l info
+```
+
+## Testlarni ishga tushirish
+
+```bash
+pytest
+pytest --cov=users --cov=records --cov-report=term-missing
+```
 
 ## Loyiha tuzilishi
-
-\`\`\`
 dissertatsiya/
-├── config/              # Django sozlamalari (settings, urls)
-├── users/                # Foydalanuvchi modeli, autentifikatsiya
-│   ├── models.py         # User modeli (role: patient/doctor/admin)
-│   ├── views.py          # Login, register, foydalanuvchi CRUD
-│   └── permissions.py    # IsAdmin, IsAdminOrDoctor
-├── records/              # Bemorlar, tibbiy yozuvlar, audit
-│   ├── models.py         # Patient, MedicalRecord, AuditLog
-│   ├── encryption.py     # EncryptedTextField, EncryptedCharField (Fernet)
-│   ├── permissions.py    # Obyekt darajasidagi ruxsatlar
-│   ├── audit.py           # Audit jurnali yordamchi funksiyasi
-│   ├── anonymization.py  # k-anonimlik algoritmi
-│   └── views.py
+├── config/ # Django sozlamalari (settings, urls, celery)
+├── users/ # Foydalanuvchi modeli, autentifikatsiya, 2FA infratuzilmasi
+│ ├── models.py # User modeli (role, avatar, lockout maydonlari)
+│ ├── views.py # Login, register, parolni tiklash, foydalanuvchi CRUD
+│ ├── tasks.py # Celery: email yuborish
+│ └── permissions.py
+├── records/ # Bemorlar, tibbiy yozuvlar, retseptlar, audit
+│ ├── models.py # Patient, MedicalRecord, Prescription, RecordAttachment, AuditLog
+│ ├── encryption.py # EncryptedTextField/CharField (Fernet)
+│ ├── anonymization.py # k-anonimlik algoritmi
+│ ├── pdf_export.py # ReportLab asosida PDF generatsiya
+│ ├── storage.py # Himoyalangan fayl xotirasi
+│ ├── tasks.py # Celery: retseptlar muddatini tekshirish (davriy)
+│ ├── permissions.py
+│ └── views.py
+├── docker-compose.yml
+├── Dockerfile
+├── entrypoint.sh
+├── wait-for-db.sh
 └── manage.py
-\`\`\`
+
 
 ## API endpointlari (qisqacha)
 
@@ -108,11 +144,15 @@ dissertatsiya/
 |---|---|---|---|
 | POST | `/api/auth/register/` | Bemor sifatida ro'yxatdan o'tish | Ochiq |
 | POST | `/api/auth/login/` | Tizimga kirish (JWT) | Ochiq |
-| GET | `/api/auth/me/` | Joriy foydalanuvchi | Autentifikatsiya |
+| POST | `/api/auth/password-reset/` | Parolni tiklash so'rovi | Ochiq |
+| POST | `/api/auth/password-reset-confirm/` | Yangi parol o'rnatish | Ochiq |
 | POST | `/api/auth/users/` | Shifokor/admin yaratish | Faqat admin |
 | GET | `/api/records/patients/` | Bemorlar ro'yxati | Shifokor/admin |
 | GET/PATCH | `/api/records/patients/:id/` | Bemor kartasi | Rolga bog'liq |
 | GET/POST | `/api/records/medical-records/` | Tibbiy yozuvlar | Rolga bog'liq |
+| GET/POST | `/api/records/prescriptions/` | Retseptlar | Rolga bog'liq |
+| POST/GET/DELETE | `/api/records/medical-records/:id/attachments/` | Fayl biriktirish | Rolga bog'liq |
+| GET | `/api/records/patients/:id/history-pdf/` | Kasallik tarixi PDF | Rolga bog'liq |
 | GET | `/api/records/audit-logs/` | Audit jurnali | Faqat admin |
 | GET | `/api/records/export-anonymized/` | Anonimlashtirilgan eksport | Faqat admin |
 
@@ -120,5 +160,10 @@ dissertatsiya/
 
 Loyiha ikki qatlamli himoya modeliga asoslangan:
 
-1. **Operatsion xavfsizlik** — kundalik foydalanishda (RBAC, JWT, shifrlash, audit)
+1. **Operatsion xavfsizlik** — kundalik foydalanishda (RBAC, JWT, shifrlash, audit, brute-force himoyasi)
 2. **Ikkilamchi foydalanish xavfsizligi** — ma'lumot tadqiqot/statistika uchun chiqarilganda (k-anonimlik asosidagi anonimlashtirish)
+
+## Muallif
+
+[F.I.Sh. — shu yerga to'ldiring], magistrant
+[Muassasa nomi — shu yerga to'ldiring]

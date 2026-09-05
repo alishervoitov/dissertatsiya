@@ -205,12 +205,11 @@ class AnonymizedExportView(APIView):
 
 
 
-
-
 class PatientHistoryPDFView(APIView):
     """
     Bemor o'z tarixini, yoki shifokor/admin istalgan bemor tarixini
-    PDF hujjat sifatida yuklab olishi uchun.
+    PDF hujjat sifatida yuklab olishi uchun. `?lang=uz|ru|en` parametri
+    orqali hujjat tilini tanlash mumkin (standart: uz).
     """
 
     def get(self, request, patient_id):
@@ -226,11 +225,15 @@ class PatientHistoryPDFView(APIView):
 
         records = MedicalRecord.objects.filter(patient=patient).select_related("created_by").order_by("-visit_date")
 
-        pdf_buffer = build_patient_history_pdf(patient, records)
+        lang = request.query_params.get("lang", "uz")
+        if lang not in ("uz", "ru", "en"):
+            lang = "uz"
+
+        pdf_buffer = build_patient_history_pdf(patient, records, lang=lang)
 
         log_audit(
             user, "export", patient=patient,
-            detail="Kasallik tarixi PDF sifatida yuklab olindi",
+            detail=f"Kasallik tarixi PDF sifatida yuklab olindi (til: {lang})",
         )
 
         filename = f"kasallik_tarixi_{patient.user.username}.pdf"

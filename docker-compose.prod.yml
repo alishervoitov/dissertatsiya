@@ -1,0 +1,69 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    env_file: .env.docker
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+
+  backend:
+    build: .
+    restart: unless-stopped
+    env_file: .env.docker
+    expose:
+      - "8000"
+    volumes:
+      - media_data:/app/media
+      - protected_media_data:/app/protected_media
+      - staticfiles_data:/app/staticfiles
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  celery_worker:
+    build: .
+    restart: unless-stopped
+    entrypoint: ["/app/wait-for-db.sh"]
+    command: celery -A config worker -l info --concurrency=2
+    env_file: .env.docker
+    depends_on:
+      - backend
+
+  celery_beat:
+    build: .
+    restart: unless-stopped
+    entrypoint: ["/app/wait-for-db.sh"]
+    command: celery -A config beat -l info
+    env_file: .env.docker
+    depends_on:
+      - backend
+
+  web:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile.prod
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - staticfiles_data:/staticfiles:ro
+      - media_data:/media:ro
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
+  media_data:
+  protected_media_data:
+  staticfiles_data:

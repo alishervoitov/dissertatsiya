@@ -1,0 +1,12 @@
+.env
+.env.*
+.venv
+.git
+.idea
+__pycache__
+*.pyc
+db.sqlite3
+media
+protected_media
+staticfiles
+.pytest_cache

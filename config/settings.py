@@ -158,6 +158,10 @@ REST_FRAMEWORK = {
     "DEFAULT_RENDERER_CLASSES": (
         "rest_framework.renderers.JSONRenderer",
     ),
+    # OPTIONS so'rovi maydonlar sxemasi va view docstring'larini autentifikatsiyasiz bermasin:
+    # metadata o'chirilgan, DRF 405 qaytaradi. CORS preflight'ga corsheaders middleware javob beradi
+    # (pentest 2026-10-19, 8-band).
+    "DEFAULT_METADATA_CLASS": None,
 }
 AUTH_USER_MODEL = 'users.User'
 

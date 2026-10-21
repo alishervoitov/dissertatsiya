@@ -639,3 +639,44 @@ class SecurityLogClientIpTests(APITestCase):
                              HTTP_X_FORWARDED_FOR="203.0.113.7", REMOTE_ADDR="172.18.0.6")
         self.assertTrue(any("IP: 203.0.113.7" in line for line in logs.output), logs.output)
         self.assertFalse(any("172.18.0.6" in line for line in logs.output), logs.output)
+
+
+class OptionsMetadataTests(APITestCase):
+    """8-band: OPTIONS sxema va docstring bermaydi; CORS preflight ishlashda davom etadi."""
+
+    PUBLIC_URLS = ["/api/auth/register/", "/api/auth/login/", "/api/auth/logout/", "/api/auth/password-reset/"]
+
+    def setUp(self):
+        cache.clear()
+
+    def test_options_on_public_endpoints_returns_no_schema(self):
+        for url in self.PUBLIC_URLS:
+            with self.subTest(url=url):
+                response = self.client.options(url)
+                self.assertEqual(response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+                body = response.content.decode()
+                self.assertNotIn("actions", body)
+                self.assertNotIn("description", body)
+                self.assertNotIn("min_length", body)
+
+    def test_options_on_admin_endpoint_returns_no_schema(self):
+        admin = User.objects.create_user(username="chief", password=STRONG_PASSWORD, role=Role.ADMIN)
+        self.client.force_authenticate(admin)
+        response = self.client.options(ADMIN_USERS_URL)
+        self.assertEqual(response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+        self.assertNotIn("actions", response.content.decode())
+
+    def test_register_post_still_works(self):
+        response = self.client.post(REGISTER_URL, {
+            "username": "optionsuser", "first_name": "A", "last_name": "B", "email": "", "phone": "",
+            "password": STRONG_PASSWORD, "password_confirm": STRONG_PASSWORD,
+        }, format="json")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.content)
+
+    def test_cors_preflight_still_answered_by_middleware(self):
+        response = self.client.options(
+            "/api/auth/login/", HTTP_ORIGIN="http://localhost:3000", HTTP_ACCESS_CONTROL_REQUEST_METHOD="POST"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response["Access-Control-Allow-Origin"], "http://localhost:3000")
+        self.assertNotIn("actions", response.content.decode())

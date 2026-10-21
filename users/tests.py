@@ -16,6 +16,7 @@ from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import IntegrityError, transaction
+from django.test import override_settings
 from PIL import Image, features
 from django.utils.encoding import force_bytes
 from django.utils.http import urlsafe_base64_encode
@@ -673,6 +674,7 @@ class OptionsMetadataTests(APITestCase):
         }, format="json")
         self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.content)
 
+    @override_settings(CORS_ALLOWED_ORIGINS=["http://localhost:3000"])  # dev rejimi (DEBUG=True) holati
     def test_cors_preflight_still_answered_by_middleware(self):
         response = self.client.options(
             "/api/auth/login/", HTTP_ORIGIN="http://localhost:3000", HTTP_ACCESS_CONTROL_REQUEST_METHOD="POST"
@@ -770,3 +772,40 @@ class SecurityLoggingTests(APITestCase):
             handler.flush()
         with open(settings.LOGGING["handlers"]["security_file"]["filename"]) as f:
             self.assertIn("Muvaffaqiyatli kirish: 'logme'", f.read())
+
+
+class CorsPolicyTests(APITestCase):
+    """CORS bandi: prod'da tashqi manbalarga ruxsat yo'q; CORS faqat /api/ uchun."""
+
+    def preflight(self, path, origin):
+        return self.client.options(path, HTTP_ORIGIN=origin, HTTP_ACCESS_CONTROL_REQUEST_METHOD="POST",
+                                   HTTP_ACCESS_CONTROL_REQUEST_HEADERS="authorization,content-type")
+
+    def test_prod_settings_allow_no_foreign_origin(self):
+        from django.conf import settings
+        self.assertFalse(settings.DEBUG)
+        self.assertEqual(settings.CORS_ALLOWED_ORIGINS, [])
+        self.assertFalse(settings.CORS_ALLOW_CREDENTIALS)
+        for origin in ["http://localhost:3000", "http://127.0.0.1:3000", "https://evil.example", "null"]:
+            with self.subTest(origin=origin):
+                response = self.preflight("/api/auth/login/", origin)
+                self.assertNotIn("Access-Control-Allow-Origin", response)
+                get = self.client.get("/api/auth/me/", HTTP_ORIGIN=origin)
+                self.assertNotIn("Access-Control-Allow-Origin", get)
+
+    @override_settings(CORS_ALLOWED_ORIGINS=["https://partner.example"])
+    def test_env_origin_allowed_only_on_api(self):
+        api = self.preflight("/api/auth/login/", "https://partner.example")
+        self.assertEqual(api["Access-Control-Allow-Origin"], "https://partner.example")
+        self.assertNotIn("Access-Control-Allow-Credentials", api)
+        admin = self.preflight("/admin/login/", "https://partner.example")
+        self.assertNotIn("Access-Control-Allow-Origin", admin)
+        other = self.preflight("/api/auth/login/", "https://evil.example")
+        self.assertNotIn("Access-Control-Allow-Origin", other)
+
+    def test_same_origin_login_still_works(self):
+        cache.clear()
+        User.objects.create_user(username="corsuser", password=STRONG_PASSWORD)
+        response = self.client.post("/api/auth/login/", {"username": "corsuser", "password": STRONG_PASSWORD},
+                                    format="json", HTTP_ORIGIN="https://medsecure.uz")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)

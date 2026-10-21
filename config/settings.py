@@ -168,10 +168,12 @@ REST_FRAMEWORK = {
 AUTH_USER_MODEL = 'users.User'
 
 
-CORS_ALLOWED_ORIGINS = [
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-]
+# Prod frontend bir xil manbadan (/api) ishlaydi - CORS kerak emas. Dev (Vite :3000) uchun faqat DEBUG'da;
+# boshqa manba kerak bo'lsa CORS_ALLOWED_ORIGINS env orqali (CORS bandi).
+_DEV_CORS_ORIGINS = "http://localhost:3000,http://127.0.0.1:3000" if DEBUG else ""
+CORS_ALLOWED_ORIGINS = [o for o in os.environ.get("CORS_ALLOWED_ORIGINS", _DEV_CORS_ORIGINS).split(",") if o]
+CORS_URLS_REGEX = r"^/api/.*$"  # admin, media, static uchun CORS yo'q
+CORS_ALLOW_CREDENTIALS = False
 
 
 # Email: SMTP faqat env'da EMAIL_HOST berilganda. Aks holda xat yuborilmaydi va matni (parol tiklash

@@ -1,14 +1,11 @@
 from django.contrib.auth import password_validation
-from django.db import transaction
-from rest_framework import serializers
-from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
-from rest_framework import serializers
-from .models import User
 from django.contrib.auth.validators import UnicodeUsernameValidator
+from django.db import transaction
 from rest_framework import serializers
 from rest_framework.exceptions import AuthenticationFailed
 from rest_framework.validators import UniqueValidator
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
+
 from .models import Role, User
 from .security import (
     LOCKOUT_DURATION,
@@ -31,15 +28,6 @@ CASE_INSENSITIVE_USERNAME_VALIDATORS = [
     UnicodeUsernameValidator(),
     UniqueValidator(queryset=User.objects.all(), message=USERNAME_TAKEN_MESSAGE, lookup="iexact"),
 ]
-
-
-class UserPublicSerializer(serializers.ModelSerializer):
-    """Parolsiz, faqat ochiq profil ma'lumotlari."""
-
-    class Meta:
-        model = User
-        fields = ["id", "username", "first_name", "last_name", "email", "phone", "role", "created_at"]
-        read_only_fields = ["id", "role", "created_at"]
 
 
 class ReservedOrUniqueUsernameValidator(UniqueValidator):

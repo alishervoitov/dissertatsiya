@@ -162,6 +162,8 @@ REST_FRAMEWORK = {
     # metadata o'chirilgan, DRF 405 qaytaradi. CORS preflight'ga corsheaders middleware javob beradi
     # (pentest 2026-10-19, 8-band).
     "DEFAULT_METADATA_CLASS": None,
+    # 429 (throttle) hodisalarini xavfsizlik logiga yozadi (log bandi)
+    "EXCEPTION_HANDLER": "users.security.logging_exception_handler",
 }
 AUTH_USER_MODEL = 'users.User'
 
@@ -172,14 +174,58 @@ CORS_ALLOWED_ORIGINS = [
 ]
 
 
-# Development uchun: email yuborish o'rniga, matnini terminalga chiqaradi
-EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
-DEFAULT_FROM_EMAIL = "noreply@medkarta.local"
+# Email: SMTP faqat env'da EMAIL_HOST berilganda. Aks holda xat yuborilmaydi va matni (parol tiklash
+# tokeni) logga tushmaydi - faqat niqoblangan qabul qiluvchi va mavzu yoziladi (log bandi).
+EMAIL_HOST = os.environ.get("EMAIL_HOST", "")
+if EMAIL_HOST:
+    EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
+    EMAIL_PORT = int(os.environ.get("EMAIL_PORT", "587"))
+    EMAIL_HOST_USER = os.environ.get("EMAIL_HOST_USER", "")
+    EMAIL_HOST_PASSWORD = os.environ.get("EMAIL_HOST_PASSWORD", "")
+    EMAIL_USE_TLS = os.environ.get("EMAIL_USE_TLS", "1") == "1"
+    EMAIL_TIMEOUT = 10
+elif DEBUG:
+    EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
+else:
+    EMAIL_BACKEND = "users.mail.RedactingEmailBackend"
+DEFAULT_FROM_EMAIL = os.environ.get("DEFAULT_FROM_EMAIL", "noreply@medkarta.local")
 
 # Frontend manzili - parolni tiklash havolasi shu yerga yo'naltiriladi
 FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:3000")
 # Parolni tiklash havolasi 1 soat amal qiladi (Django standarti 3 kun; pentest 2026-10-19, 7-band)
 PASSWORD_RESET_TIMEOUT = 3600
+
+
+# Loglar (log bandi): security logger INFO dan boshlab stdout'ga (docker logs) va volume'dagi faylga.
+# WatchedFileHandler bir nechta jarayon (gunicorn worker'lari, celery) bitta faylga yozishini ko'taradi;
+# rotatsiya hostdagi logrotate orqali.
+LOG_DIR = Path(os.environ.get("LOG_DIR", BASE_DIR / "logs"))
+try:
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+except OSError:
+    pass
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "default": {"format": "%(asctime)s %(levelname)s %(name)s pid=%(process)d %(message)s"},
+    },
+    "handlers": {
+        "console": {"class": "logging.StreamHandler", "stream": "ext://sys.stdout", "formatter": "default"},
+        "security_file": {
+            "class": "logging.handlers.WatchedFileHandler",
+            "filename": str(LOG_DIR / "security.log"),
+            "formatter": "default",
+            "delay": True,
+        },
+    },
+    "loggers": {
+        "security": {"handlers": ["console", "security_file"], "level": "INFO", "propagate": False},
+        "django.request": {"handlers": ["console"], "level": "WARNING", "propagate": False},
+    },
+    "root": {"handlers": ["console"], "level": "WARNING"},
+}
 
 
 # Redis - kesh va Celery uchun

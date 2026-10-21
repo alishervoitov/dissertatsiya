@@ -7,12 +7,17 @@ Bloklash holati bazada emas, cache'da (Redis) username+IP kaliti bilan saqlanadi
 - boshqa IP'dan kelgan urinishlar hisobni bloklay olmaydi (hisobni bloklash DoS'i).
 """
 import hashlib
+import logging
 import re
 import unicodedata
 from datetime import timedelta
 
 from django.core.cache import cache
+from rest_framework.exceptions import Throttled
 from rest_framework.throttling import BaseThrottle
+from rest_framework.views import exception_handler as drf_exception_handler
+
+security_logger = logging.getLogger("security")
 
 MAX_FAILED_ATTEMPTS = 5
 LOCKOUT_DURATION = timedelta(minutes=15)
@@ -116,3 +121,28 @@ def revoke_refresh_tokens(user):
         [BlacklistedToken(token=token) for token in active], ignore_conflicts=True
     )
     return len(created)
+
+
+def mask_email(email):
+    """'alisher@example.com' -> 'a***@example.com': logda shaxsiy ma'lumot ochiq turmasin (log bandi)."""
+    local, sep, domain = str(email or "").strip().rpartition("@")
+    if not sep or not local or not domain:
+        return "***"
+    # Domen ham foydalanuvchi kiritgan qiymat: yangi qator va boshqa belgilar bilan soxta log yozuvi yasalmasin
+    return f"{local[0] if local[0].isalnum() else '?'}***@{re.sub(r'[^A-Za-z0-9.-]', '?', domain)[:100]}"
+
+
+def logging_exception_handler(exc, context):
+    """DRF exception handler: 429 hodisalarini (brute-force belgisi) xavfsizlik logiga yozadi."""
+    if isinstance(exc, Throttled):
+        request = context.get("request")
+        view = context.get("view")
+        security_logger.warning(
+            "Throttled: scope=%s %s %s (IP: %s, kutish=%ss)",
+            getattr(view, "throttle_scope", None),
+            getattr(request, "method", "?"),
+            getattr(request, "path", "?"),
+            client_ident(request) if request is not None else "?",
+            int(exc.wait) if exc.wait is not None else "?",
+        )
+    return drf_exception_handler(exc, context)

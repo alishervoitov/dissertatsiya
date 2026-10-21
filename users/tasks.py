@@ -7,6 +7,8 @@ from django.core.mail import send_mail
 from django.utils.encoding import force_bytes
 from django.utils.http import urlsafe_base64_encode
 
+from .security import mask_email
+
 security_logger = logging.getLogger("security")
 
 
@@ -21,7 +23,8 @@ def request_password_reset(email):
 
     user = User.objects.filter(email__iexact=email).first()
     if not user:
-        security_logger.info("Parolni tiklash so'ralgan, lekin email topilmadi: %s", email)
+        # Email foydalanuvchi kiritgan qiymat: niqoblanadi (shaxsiy ma'lumot, log injection)
+        security_logger.info("Parolni tiklash so'ralgan, lekin email topilmadi: %s", mask_email(email))
         return
 
     uid = urlsafe_base64_encode(force_bytes(user.pk))

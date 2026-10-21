@@ -680,3 +680,93 @@ class OptionsMetadataTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response["Access-Control-Allow-Origin"], "http://localhost:3000")
         self.assertNotIn("actions", response.content.decode())
+
+
+class SecurityLoggingTests(APITestCase):
+    """Log bandi: hodisalar yoziladi, foydalanuvchi qiymatlari qochiriladi, maxfiy ma'lumot logga tushmaydi."""
+
+    SECRET = "Sir-Parol-987654!"
+
+    def setUp(self):
+        cache.clear()
+        self.user = User.objects.create_user(username="logme", email="logme@example.com", password=STRONG_PASSWORD)
+
+    def login(self, username, password, ip="10.9.9.9"):
+        return self.client.post("/api/auth/login/", {"username": username, "password": password},
+                                format="json", HTTP_X_FORWARDED_FOR=ip)
+
+    def test_security_logger_configured_for_info(self):
+        import logging
+        logger = logging.getLogger("security")
+        self.assertEqual(logger.getEffectiveLevel(), logging.INFO)
+        self.assertTrue(logger.handlers)
+        self.assertFalse(logger.propagate)
+
+    def test_successful_and_failed_login_logged(self):
+        with self.assertLogs("security", level="INFO") as logs:
+            self.assertEqual(self.login("logme", STRONG_PASSWORD).status_code, 200)
+            self.assertEqual(self.login("logme", self.SECRET).status_code, 401)
+        self.assertTrue(any(r.levelname == "INFO" and "Muvaffaqiyatli kirish: 'logme' (IP: 10.9.9.9)" in r.getMessage()
+                            for r in logs.records), logs.output)
+        self.assertTrue(any(r.levelname == "WARNING" and "Muvaffaqiyatsiz kirish urinishi: 'logme'" in r.getMessage()
+                            for r in logs.records), logs.output)
+        self.assertFalse(any(self.SECRET in line or STRONG_PASSWORD in line for line in logs.output), logs.output)
+
+    def test_failed_login_response_unchanged(self):
+        response = self.login("logme", "wrong-password-1")
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.json()["detail"], LOGIN_FAILED_MESSAGE)
+
+    @mock.patch.object(ScopedRateThrottle, "allow_request", return_value=True)
+    def test_lockout_logged(self, _):
+        with self.assertLogs("security", level="WARNING") as logs:
+            for _ in range(MAX_FAILED_ATTEMPTS):
+                self.login("logme", "wrong-password-1")
+        self.assertTrue(any("Login bloklandi: 'logme' (IP: 10.9.9.9" in line for line in logs.output), logs.output)
+
+    def test_throttled_request_logged(self):
+        with self.assertLogs("security", level="WARNING") as logs:
+            for _ in range(6):
+                response = self.login("nobody", "wrong-password-1")
+        self.assertEqual(response.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+        self.assertTrue(any("Throttled: scope=login POST /api/auth/login/ (IP: 10.9.9.9" in line for line in logs.output),
+                        logs.output)
+
+    def test_newline_in_username_cannot_forge_log_line(self):
+        with self.assertLogs("security", level="WARNING") as logs:
+            self.login("evil\n2026-10-19 INFO security Muvaffaqiyatli kirish: 'admin'", "x")
+        for record in logs.records:
+            self.assertNotIn("\n", record.getMessage())
+
+    def test_unknown_reset_email_is_masked(self):
+        with self.assertLogs("security", level="INFO") as logs:
+            request_password_reset("stranger.person@example.com")
+            request_password_reset("x@evil.com\nFORGED")
+        output = "\n".join(logs.output)
+        self.assertIn("s***@example.com", output)
+        self.assertNotIn("stranger.person", output)
+        for record in logs.records:
+            self.assertNotIn("\n", record.getMessage())
+
+    def test_redacting_email_backend_never_logs_body_or_token(self):
+        from django.core.mail import send_mail
+        from django.test import override_settings
+
+        token_link = "https://medsecure.uz/reset-password/NDI/abc123-secret-token/"
+        with override_settings(EMAIL_BACKEND="users.mail.RedactingEmailBackend"):
+            with self.assertLogs("security", level="WARNING") as logs:
+                sent = send_mail("Parolni tiklash", f"Havola: {token_link}", None, ["logme@example.com"])
+        self.assertEqual(sent, 0)
+        output = "\n".join(logs.output)
+        self.assertIn("to=l***@example.com", output)
+        self.assertNotIn("abc123-secret-token", output)
+        self.assertNotIn("reset-password", output)
+
+    def test_security_events_reach_log_file(self):
+        from django.conf import settings
+        self.login("logme", STRONG_PASSWORD)
+        import logging
+        for handler in logging.getLogger("security").handlers:
+            handler.flush()
+        with open(settings.LOGGING["handlers"]["security_file"]["filename"]) as f:
+            self.assertIn("Muvaffaqiyatli kirish: 'logme'", f.read())

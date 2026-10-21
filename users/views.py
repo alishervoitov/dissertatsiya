@@ -1,6 +1,6 @@
 import logging
 from rest_framework import generics, permissions, status
-from rest_framework.exceptions import Throttled, ValidationError
+from rest_framework.exceptions import AuthenticationFailed, Throttled, ValidationError
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
@@ -69,19 +69,22 @@ class LoginView(TokenObtainPairView):
     throttle_scope = "login"
 
     def post(self, request, *args, **kwargs):
-        response = super().post(request, *args, **kwargs)
-        if response.status_code == 200:
-            security_logger.info(
-                "Muvaffaqiyatli kirish: %s (IP: %s)",
-                request.data.get("username"),
-                client_ident(request),
-            )
-        else:
+        # Xato login exception bilan tugaydi, shuning uchun uni shu yerda ushlab yozamiz (log bandi).
+        # Username foydalanuvchi kiritgan qiymat: %r - yangi qator bilan soxta log yozuvi yasab bo'lmasin.
+        try:
+            response = super().post(request, *args, **kwargs)
+        except AuthenticationFailed:
             security_logger.warning(
-                "Muvaffaqiyatsiz kirish urinishi: %s (IP: %s)",
+                "Muvaffaqiyatsiz kirish urinishi: %r (IP: %s)",
                 request.data.get("username"),
                 client_ident(request),
             )
+            raise
+        security_logger.info(
+            "Muvaffaqiyatli kirish: %r (IP: %s)",
+            request.data.get("username"),
+            client_ident(request),
+        )
         return response
 
 

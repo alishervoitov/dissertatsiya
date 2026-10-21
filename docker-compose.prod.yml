@@ -1,3 +1,10 @@
+# Log rotatsiyasi (log bandi): har konteyner uchun 20 MB x 5 fayl
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
 services:
   db:
     image: postgres:16-alpine
@@ -25,6 +32,8 @@ services:
       - media_data:/app/media
       - protected_media_data:/app/protected_media
       - staticfiles_data:/app/staticfiles
+      - logs_data:/app/logs
+    logging: *default-logging
     depends_on:
       db:
         condition: service_healthy
@@ -37,6 +46,9 @@ services:
     entrypoint: ["/app/wait-for-db.sh"]
     command: celery -A config worker -l info --concurrency=2
     env_file: .env.docker
+    volumes:
+      - logs_data:/app/logs
+    logging: *default-logging
     depends_on:
       - backend
 
@@ -46,6 +58,9 @@ services:
     entrypoint: ["/app/wait-for-db.sh"]
     command: celery -A config beat -l info
     env_file: .env.docker
+    volumes:
+      - logs_data:/app/logs
+    logging: *default-logging
     depends_on:
       - backend
 
@@ -59,6 +74,7 @@ services:
     volumes:
       - staticfiles_data:/staticfiles:ro
       - media_data:/media:ro
+    logging: *default-logging
     depends_on:
       - backend
 
@@ -80,5 +96,6 @@ volumes:
   media_data:
   protected_media_data:
   staticfiles_data:
+  logs_data:
   caddy_data:
   caddy_config:

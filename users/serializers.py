@@ -11,11 +11,13 @@ from rest_framework.validators import UniqueValidator
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from .models import Role, User
 from .security import (
+    LOCKOUT_DURATION,
     client_ident,
     clear_login_failures,
     is_login_locked,
     is_reserved_username,
     register_login_failure,
+    security_logger,
 )
 
 # Username'ni qaytarmaydi; view "unique" kodi bo'yicha bunday javoblarni sanaydi (5-band).
@@ -142,7 +144,11 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
         try:
             data = super().validate(attrs)
         except AuthenticationFailed:
-            register_login_failure(username, ident)
+            if register_login_failure(username, ident):
+                security_logger.warning(
+                    "Login bloklandi: %r (IP: %s, %s daqiqa)",
+                    username, ident, int(LOCKOUT_DURATION.total_seconds() // 60),
+                )
             raise AuthenticationFailed(LOGIN_FAILED_MESSAGE, code="login_failed")
 
         clear_login_failures(username, ident)

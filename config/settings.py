@@ -254,6 +254,16 @@ CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE = TIME_ZONE
 CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
+# Davriy vazifalar kodda (git'da) saqlanadi; DatabaseScheduler beat ishga tushganda ularni bazaga yozadi.
+# Yangi crontab vazifasi darhol emas, keyingi rejalashtirilgan vaqtda birinchi marta ishlaydi.
+from celery.schedules import crontab
+
+CELERY_BEAT_SCHEDULE = {
+    "deactivate-expired-prescriptions": {
+        "task": "records.tasks.deactivate_expired_prescriptions",
+        "schedule": crontab(hour=0, minute=30),  # har kuni 00:30 UTC (Toshkent 05:30)
+    },
+}
 
 
 # JWT sozlamalari (logout tokenni qora ro'yxatga qo'shishi uchun token_blacklist ilovasi kerak)

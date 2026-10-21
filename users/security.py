@@ -7,6 +7,8 @@ Bloklash holati bazada emas, cache'da (Redis) username+IP kaliti bilan saqlanadi
 - boshqa IP'dan kelgan urinishlar hisobni bloklay olmaydi (hisobni bloklash DoS'i).
 """
 import hashlib
+import re
+import unicodedata
 from datetime import timedelta
 
 from django.core.cache import cache
@@ -18,6 +20,32 @@ LOCKOUT_DURATION = timedelta(minutes=15)
 # NAT ortidagi (universitet, ofis, mobil operator) foydalanuvchilar bloklanmasligi uchun yumshoqroq chegara.
 REGISTER_TAKEN_LIMIT = 20
 REGISTER_TAKEN_WINDOW = timedelta(hours=1)
+
+# Ommaviy ro'yxatdan o'tishda taqiqlangan nomlar (pentest 2026-10-19, 6-band).
+# Administrator panel orqali yaratish cheklanmaydi (xizmat hisoblari uchun).
+RESERVED_USERNAMES = frozenset({
+    "admin", "administrator", "root", "support", "system", "superuser", "sysadmin", "staff",
+    "moderator", "security", "webmaster", "postmaster", "hostmaster", "noreply",
+    "medkarta", "medsecure", "doctor", "shifokor",
+    "админ", "администратор", "поддержка",
+})
+# Lotin harfiga o'xshash kirill/yunon harflari - faqat solishtirish uchun, username o'zgartirilmaydi.
+_CONFUSABLES = str.maketrans({
+    "а": "a", "е": "e", "о": "o", "р": "p", "с": "c", "і": "i", "ј": "j", "х": "x", "у": "y",
+    "ѕ": "s", "ԁ": "d", "ο": "o", "α": "a", "ι": "i", "ν": "v", "ρ": "p",
+})
+
+
+def is_reserved_username(username):
+    """
+    'admin', 'ADMIN', 'ａｄｍｉｎ' (to'liq kenglik), 'аdmin' (kirill 'а'), 'ad_min', 'admin1' - hammasi zaxira.
+    Prefiks emas: 'adminka', 'staffan', 'rooted' kabi oddiy nomlar ruxsat etiladi.
+    """
+    base = re.sub(r"[\W_]+", "", unicodedata.normalize("NFKC", username or "").casefold())
+    for candidate in (base, base.translate(_CONFUSABLES)):
+        if candidate in RESERVED_USERNAMES or re.sub(r"\d+$", "", candidate) in RESERVED_USERNAMES:
+            return True
+    return False
 
 
 def client_ident(request):

@@ -10,10 +10,17 @@ from rest_framework.exceptions import AuthenticationFailed
 from rest_framework.validators import UniqueValidator
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from .models import Role, User
-from .security import client_ident, clear_login_failures, is_login_locked, register_login_failure
+from .security import (
+    client_ident,
+    clear_login_failures,
+    is_login_locked,
+    is_reserved_username,
+    register_login_failure,
+)
 
 # Username'ni qaytarmaydi; view "unique" kodi bo'yicha bunday javoblarni sanaydi (5-band).
 USERNAME_TAKEN_MESSAGE = "Bu foydalanuvchi nomi band, boshqasini tanlang."
+USERNAME_RESERVED_MESSAGE = "Bu foydalanuvchi nomidan foydalanib bo'lmaydi."
 # Noto'g'ri parol, mavjud bo'lmagan hisob va bloklangan hisob uchun bir xil javob (5-band).
 LOGIN_FAILED_MESSAGE = "Login yoki parol noto'g'ri, yoki hisob vaqtincha bloklangan."
 
@@ -25,6 +32,19 @@ class UserPublicSerializer(serializers.ModelSerializer):
         model = User
         fields = ["id", "username", "first_name", "last_name", "email", "phone", "role", "created_at"]
         read_only_fields = ["id", "role", "created_at"]
+
+
+class ReservedOrUniqueUsernameValidator(UniqueValidator):
+    """
+    Avval zaxira nom (6-band), keyin bandlik tekshiriladi. Bitta validator bo'lgani uchun
+    zaxira nom (masalan mavjud 'admin') "band" xatosini qo'shimcha qaytarmaydi va 5-banddagi
+    "band" hisoblagichiga kirmaydi.
+    """
+
+    def __call__(self, value, serializer_field):
+        if is_reserved_username(value):
+            raise serializers.ValidationError(USERNAME_RESERVED_MESSAGE, code="reserved")
+        super().__call__(value, serializer_field)
 
 
 class RegisterSerializer(serializers.ModelSerializer):
@@ -47,7 +67,7 @@ class RegisterSerializer(serializers.ModelSerializer):
             "username": {
                 "validators": [
                     UnicodeUsernameValidator(),
-                    UniqueValidator(queryset=User.objects.all(), message=USERNAME_TAKEN_MESSAGE),
+                    ReservedOrUniqueUsernameValidator(queryset=User.objects.all(), message=USERNAME_TAKEN_MESSAGE),
                 ],
             },
         }

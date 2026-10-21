@@ -26,8 +26,9 @@ from rest_framework.throttling import ScopedRateThrottle
 
 from .avatar import _normalize_mode
 from .models import User
-from .security import MAX_FAILED_ATTEMPTS, REGISTER_TAKEN_LIMIT
-from .serializers import LOGIN_FAILED_MESSAGE, USERNAME_TAKEN_MESSAGE
+from .models import Role
+from .security import MAX_FAILED_ATTEMPTS, REGISTER_TAKEN_LIMIT, is_reserved_username
+from .serializers import LOGIN_FAILED_MESSAGE, USERNAME_RESERVED_MESSAGE, USERNAME_TAKEN_MESSAGE
 from .tasks import request_password_reset
 
 AVATAR_URL = "/api/auth/me/avatar/"
@@ -431,3 +432,72 @@ class PasswordResetEnumerationTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK, response.content)
         self.user.refresh_from_db()
         self.assertTrue(self.user.check_password("Nw8$kRt3!mZq5y"))
+
+
+ADMIN_USERS_URL = "/api/auth/users/"
+RESERVED_VARIANTS = [
+    "admin", "Admin", "ADMIN", "ａｄｍｉｎ", "аdmin", "ad_min", "admin.", "admin1", "root2024",
+    "root", "support", "system", "Administrator", "админ", "medkarta",
+]
+ALLOWED_NAMES = ["alisher", "Алишер", "adminka", "staffan", "rooted", "supporter", "sys_user", "doctorova"]
+
+
+class ReservedUsernameTests(APITestCase):
+    """6-band: admin, root, support, system va o'xshash nomlar ommaviy ro'yxatdan o'tishda taqiqlanadi."""
+
+    def setUp(self):
+        cache.clear()
+
+    def register(self, username, password=STRONG_PASSWORD, ip="10.6.6.6"):
+        payload = {
+            "username": username, "first_name": "Test", "last_name": "User", "email": "", "phone": "",
+            "password": password, "password_confirm": password,
+        }
+        return self.client.post(REGISTER_URL, payload, format="json", HTTP_X_FORWARDED_FOR=ip)
+
+    def test_reserved_detection(self):
+        for name in RESERVED_VARIANTS:
+            with self.subTest(name=name):
+                self.assertTrue(is_reserved_username(name))
+        for name in ALLOWED_NAMES:
+            with self.subTest(name=name):
+                self.assertFalse(is_reserved_username(name))
+
+    @mock.patch.object(ScopedRateThrottle, "allow_request", return_value=True)
+    def test_reserved_names_rejected_on_register(self, _):
+        for name in RESERVED_VARIANTS:
+            with self.subTest(name=name):
+                response = self.register(name)
+                self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST, response.content)
+                self.assertEqual(response.json()["username"], [USERNAME_RESERVED_MESSAGE])
+        self.assertFalse(User.objects.exists())
+
+    @mock.patch.object(ScopedRateThrottle, "allow_request", return_value=True)
+    def test_allowed_names_register(self, _):
+        for name in ALLOWED_NAMES:
+            with self.subTest(name=name):
+                self.assertEqual(self.register(name).status_code, status.HTTP_201_CREATED)
+
+    @mock.patch.object(ScopedRateThrottle, "allow_request", return_value=True)
+    def test_existing_reserved_account_reports_reserved_not_taken(self, _):
+        # Bazada 'admin' bo'lsa ham javob "band" emas, "zaxira" - bandlik oshkor bo'lmaydi
+        User.objects.create_user(username="admin", password=STRONG_PASSWORD)
+        response = self.register("admin")
+        self.assertEqual(response.json()["username"], [USERNAME_RESERVED_MESSAGE])
+        self.assertNotIn(USERNAME_TAKEN_MESSAGE, response.content.decode())
+
+    @mock.patch.object(ScopedRateThrottle, "allow_request", return_value=True)
+    def test_reserved_attempts_not_counted_as_taken(self, _):
+        for _ in range(REGISTER_TAKEN_LIMIT + 1):
+            self.assertEqual(self.register("admin").status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(self.register("freshname").status_code, status.HTTP_201_CREATED)
+
+    def test_admin_can_create_reserved_service_account(self):
+        admin = User.objects.create_user(username="chief", password=STRONG_PASSWORD, role=Role.ADMIN)
+        self.client.force_authenticate(admin)
+        response = self.client.post(ADMIN_USERS_URL, {
+            "username": "support", "first_name": "Xizmat", "last_name": "Hisobi", "email": "",
+            "phone": "", "password": STRONG_PASSWORD, "role": Role.DOCTOR,
+        }, format="json")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.content)
+        self.assertTrue(User.objects.filter(username="support").exists())

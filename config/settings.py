@@ -26,16 +26,18 @@ FIELD_ENCRYPTION_KEY = os.environ.get("FIELD_ENCRYPTION_KEY", "")
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-SECRET_KEY = 'django-insecure-_l*f-w+hfl&p^e4sv_z^3lwety1xga-i*%wst$t%s1ber^7l$l'
+SECRET_KEY = os.environ["SECRET_KEY"]
 
-DEBUG = True
+DEBUG = os.environ.get("DEBUG", "False") == "True"
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = [h for h in os.environ.get("ALLOWED_HOSTS", "127.0.0.1,localhost").split(",") if h]
+CSRF_TRUSTED_ORIGINS = [o for o in os.environ.get("CSRF_TRUSTED_ORIGINS", "").split(",") if o]
 
 DJANGO_REDIS_IGNORE_EXCEPTIONS = True
 # Application definition
 
 INSTALLED_APPS = [
+    "rest_framework_simplejwt.token_blacklist",
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -133,6 +135,8 @@ STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / "staticfiles"
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
+# Avatar uchun maksimal hajm (bayt). nginx'dagi client_max_body_size 2m ichiga multipart bilan sig'adi.
+AVATAR_MAX_BYTES = 2_000_000
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
@@ -144,8 +148,11 @@ REST_FRAMEWORK = {
     ),
     "DEFAULT_THROTTLE_RATES": {
         "login": "5/min",
-        "register": "10/hour",
+        # NAT ortidagi foydalanuvchilar uchun; band username javoblari alohida 20/soat (users/security.py)
+        "register": "30/hour",
         "password_reset": "5/hour",
+        "logout": "20/min",
+        "avatar": "10/hour",
     },
     "DEFAULT_RENDERER_CLASSES": (
         "rest_framework.renderers.JSONRenderer",
@@ -192,3 +199,19 @@ CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE = TIME_ZONE
 CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
+
+
+# JWT sozlamalari (logout tokenni qora ro'yxatga qo'shishi uchun token_blacklist ilovasi kerak)
+from datetime import timedelta as _td
+
+SIMPLE_JWT = {
+    "ACCESS_TOKEN_LIFETIME": _td(minutes=15),
+    "REFRESH_TOKEN_LIFETIME": _td(days=1),
+}
+
+
+# HTTPS (reverse proxy ortida). Faqat USE_HTTPS=1 bo'lganda yoqiladi.
+if os.environ.get("USE_HTTPS", "0") == "1":
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True

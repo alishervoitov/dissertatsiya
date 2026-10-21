@@ -4,11 +4,18 @@ from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from rest_framework import serializers
 from .models import User
-from datetime import timedelta
-from django.utils import timezone
+from django.contrib.auth.validators import UnicodeUsernameValidator
 from rest_framework import serializers
+from rest_framework.exceptions import AuthenticationFailed
+from rest_framework.validators import UniqueValidator
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from .models import Role, User
+from .security import client_ident, clear_login_failures, is_login_locked, register_login_failure
+
+# Username'ni qaytarmaydi; view "unique" kodi bo'yicha bunday javoblarni sanaydi (5-band).
+USERNAME_TAKEN_MESSAGE = "Bu foydalanuvchi nomi band, boshqasini tanlang."
+# Noto'g'ri parol, mavjud bo'lmagan hisob va bloklangan hisob uchun bir xil javob (5-band).
+LOGIN_FAILED_MESSAGE = "Login yoki parol noto'g'ri, yoki hisob vaqtincha bloklangan."
 
 
 class UserPublicSerializer(serializers.ModelSerializer):
@@ -36,6 +43,14 @@ class RegisterSerializer(serializers.ModelSerializer):
             "id", "username", "first_name", "last_name",
             "email", "phone", "password", "password_confirm",
         ]
+        extra_kwargs = {
+            "username": {
+                "validators": [
+                    UnicodeUsernameValidator(),
+                    UniqueValidator(queryset=User.objects.all(), message=USERNAME_TAKEN_MESSAGE),
+                ],
+            },
+        }
 
     def validate(self, attrs):
         if attrs["password"] != attrs.pop("password_confirm"):
@@ -78,10 +93,6 @@ class AdminCreateUserSerializer(serializers.ModelSerializer):
 
 
 
-MAX_FAILED_ATTEMPTS = 5
-LOCKOUT_DURATION = timedelta(minutes=15)
-
-
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
     @classmethod
     def get_token(cls, user):
@@ -91,32 +102,20 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
         return token
 
     def validate(self, attrs):
-        username = attrs.get("username")
-        user = User.objects.filter(username=username).first()
+        # Bloklash username+IP bo'yicha cache'da; hisob bor-yo'qligidan qat'i nazar bir xil ishlaydi.
+        username = attrs.get(self.username_field)
+        ident = client_ident(self.context["request"])
 
-        if user and user.is_locked:
-            remaining = int((user.locked_until - timezone.now()).total_seconds() / 60) + 1
-            raise serializers.ValidationError(
-                f"Hisob vaqtincha bloklangan. {remaining} daqiqadan so'ng qayta urinib ko'ring."
-            )
+        if is_login_locked(username, ident):
+            raise AuthenticationFailed(LOGIN_FAILED_MESSAGE, code="login_failed")
 
         try:
             data = super().validate(attrs)
-        except Exception:
-            # Muvaffaqiyatsiz urinish - hisoblagichni oshiramiz
-            if user:
-                user.failed_login_attempts += 1
-                if user.failed_login_attempts >= MAX_FAILED_ATTEMPTS:
-                    user.locked_until = timezone.now() + LOCKOUT_DURATION
-                    user.failed_login_attempts = 0
-                user.save(update_fields=["failed_login_attempts", "locked_until"])
-            raise
+        except AuthenticationFailed:
+            register_login_failure(username, ident)
+            raise AuthenticationFailed(LOGIN_FAILED_MESSAGE, code="login_failed")
 
-        # Muvaffaqiyatli login - hisoblagichni tozalaymiz
-        if user:
-            user.failed_login_attempts = 0
-            user.locked_until = None
-            user.save(update_fields=["failed_login_attempts", "locked_until"])
+        clear_login_failures(username, ident)
 
         data["role"] = self.user.role
         data["user"] = UserPublicSerializer(self.user, context=self.context).data

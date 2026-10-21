@@ -54,16 +54,31 @@ services:
       context: ../frontend
       dockerfile: Dockerfile.prod
     restart: unless-stopped
-    ports:
-      - "80:80"
+    expose:
+      - "80"
     volumes:
       - staticfiles_data:/staticfiles:ro
       - media_data:/media:ro
     depends_on:
       - backend
 
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - web
+
 volumes:
   postgres_data:
   media_data:
   protected_media_data:
   staticfiles_data:
+  caddy_data:
+  caddy_config:

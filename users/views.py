@@ -1,13 +1,17 @@
-from django.shortcuts import render
 import logging
 from rest_framework import generics, permissions, status
+from rest_framework.exceptions import Throttled, ValidationError
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
+from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView
+from .avatar import AvatarError, delete_old_avatar, process_avatar
 from .models import User
 from .permissions import IsAdmin
+from .security import client_ident, record_register_taken, register_taken_exceeded
+from .tasks import request_password_reset
 from .serializers import (
     AdminCreateUserSerializer,
     CustomTokenObtainPairSerializer,
@@ -15,10 +19,9 @@ from .serializers import (
     UserPublicSerializer,
 )
 from django.contrib.auth.tokens import default_token_generator
-from django.core.mail import send_mail
-from django.conf import settings
-from django.utils.encoding import force_bytes, force_str
-from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
+from django.db import transaction
+from django.utils.encoding import force_str
+from django.utils.http import urlsafe_base64_decode
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 security_logger = logging.getLogger("security")
@@ -34,7 +37,22 @@ class RegisterView(generics.CreateAPIView):
     throttle_scope = "register"
 
     def create(self, request, *args, **kwargs):
-        response = super().create(request, *args, **kwargs)
+        # "Username band" javobi hisob borligini bildiradi: bunday javoblar IP bo'yicha
+        # alohida cheklanadi va logga yoziladi (pentest 2026-10-19, 5-band).
+        ident = client_ident(request)
+        if register_taken_exceeded(ident):
+            security_logger.warning("Register: band username cheklovi oshdi (IP: %s)", ident)
+            raise Throttled(detail="Juda ko'p urinish. Birozdan so'ng qayta urinib ko'ring.")
+
+        serializer = self.get_serializer(data=request.data)
+        if not serializer.is_valid():
+            if any(error.code == "unique" for error in serializer.errors.get("username", [])):
+                record_register_taken(ident)
+                security_logger.warning("Register: band username so'raldi (IP: %s)", ident)
+            raise ValidationError(serializer.errors)
+
+        self.perform_create(serializer)
+        response = Response(serializer.data, status=status.HTTP_201_CREATED, headers=self.get_success_headers(serializer.data))
         security_logger.info(
             "Yangi bemor ro'yxatdan o'tdi: %s (IP: %s)",
             request.data.get("username"),
@@ -70,16 +88,24 @@ class LoginView(TokenObtainPairView):
 class LogoutView(APIView):
     """Refresh tokenni qora ro'yxatga qo'shib, sessiyani butunlay yopadi."""
 
-    permission_classes = [permissions.IsAuthenticated]
+    # Refresh tokenning o'zi credential: access eskirgan bo'lsa ham logout ishlashi kerak,
+    # aks holda 401 qaytadi va blacklist chaqirilmaydi. Sarlavhadagi access token e'tiborga olinmaydi.
+    authentication_classes = []
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "logout"
 
     def post(self, request):
         try:
-            refresh_token = request.data["refresh"]
-            token = RefreshToken(refresh_token)
+            token = RefreshToken(request.data["refresh"])
             token.blacklist()
-        except Exception:
+        except (KeyError, TypeError, TokenError):
             return Response({"detail": "Yaroqsiz token."}, status=status.HTTP_400_BAD_REQUEST)
-        security_logger.info("Chiqish: %s", request.user.username)
+        security_logger.info(
+            "Chiqish: user_id=%s (IP: %s)",
+            token.get("user_id"),
+            request.META.get("REMOTE_ADDR"),
+        )
         return Response(status=status.HTTP_205_RESET_CONTENT)
 
 
@@ -127,21 +153,37 @@ class AvatarUploadView(APIView):
 
     permission_classes = [permissions.IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "avatar"
 
     def post(self, request):
         avatar = request.FILES.get("avatar")
         if not avatar:
             return Response({"detail": "Rasm fayli topilmadi."}, status=status.HTTP_400_BAD_REQUEST)
 
-        if avatar.size > 5 * 1024 * 1024:  # 5 MB chegarasi
-            return Response({"detail": "Fayl hajmi 5 MB dan oshmasligi kerak."}, status=status.HTTP_400_BAD_REQUEST)
+        # Content-Type mijoz tomonidan beriladi, unga ishonilmaydi: fayl rasm sifatida ochilib qayta kodlanadi.
+        try:
+            content, name = process_avatar(avatar)
+        except AvatarError as exc:
+            security_logger.warning(
+                "Avatar rad etildi: %s (fayl: %r, %s bayt, IP: %s): %s",
+                request.user.username,
+                avatar.name,
+                avatar.size,
+                request.META.get("REMOTE_ADDR"),
+                exc,
+            )
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
-        if not avatar.content_type.startswith("image/"):
-            return Response({"detail": "Faqat rasm fayllari qabul qilinadi."}, status=status.HTTP_400_BAD_REQUEST)
-
-        request.user.avatar = avatar
-        request.user.save()
-        return Response(UserPublicSerializer(request.user, context={"request": request}).data)
+        user = request.user
+        old_name = user.avatar.name if user.avatar else ""
+        storage = user.avatar.storage
+        with transaction.atomic():
+            user.avatar.save(name, content, save=False)
+            user.save(update_fields=["avatar"])
+            # Eski fayl faqat yangisi bazaga yozilgandan keyin o'chiriladi
+            transaction.on_commit(lambda: delete_old_avatar(storage, old_name))
+        return Response(UserPublicSerializer(user, context={"request": request}).data)
 
 
 
@@ -167,20 +209,12 @@ class PasswordResetRequestView(APIView):
         if not email:
             return Response({"detail": "Email kiritilishi shart."}, status=status.HTTP_400_BAD_REQUEST)
 
-        user = User.objects.filter(email__iexact=email).first()
-        if not user:
-            security_logger.info("Parolni tiklash so'ralgan, lekin email topilmadi: %s", email)
-            return generic_response
-
-        uid = urlsafe_base64_encode(force_bytes(user.pk))
-        token = default_token_generator.make_token(user)
-        reset_link = f"{settings.FRONTEND_URL}/reset-password/{uid}/{token}/"
-
-        from .tasks import send_password_reset_email
-        send_password_reset_email.delay(
-            user.email, user.get_full_name() or user.username, reset_link,
-        )
-        security_logger.info("Parolni tiklash havolasi yuborildi: %s", user.username)
+        # Hisobni qidirish fon vazifasida: javob vaqti email mavjudligiga bog'liq bo'lmasin (5-band).
+        # Broker (Redis) ishlamasa ham javob bir xil: 500 xatosi foydalanuvchiga ko'rsatilmaydi, logga yoziladi.
+        try:
+            request_password_reset.delay(email)
+        except Exception:
+            security_logger.error("Parolni tiklash vazifasini navbatga qo'yib bo'lmadi", exc_info=True)
         return generic_response
 
 
@@ -197,14 +231,16 @@ class PasswordResetConfirmView(APIView):
         if not all([uid, token, new_password]):
             return Response({"detail": "Barcha maydonlar to'ldirilishi shart."}, status=status.HTTP_400_BAD_REQUEST)
 
+        # Mavjud bo'lmagan uid va noto'g'ri token uchun bir xil javob - foydalanuvchi ID'lari oshkor bo'lmasin (5-band).
+        invalid_link = Response({"detail": "Havola yaroqsiz yoki muddati tugagan."}, status=status.HTTP_400_BAD_REQUEST)
         try:
             user_id = force_str(urlsafe_base64_decode(uid))
             user = User.objects.get(pk=user_id)
         except (User.DoesNotExist, ValueError, TypeError, OverflowError):
-            return Response({"detail": "Havola yaroqsiz."}, status=status.HTTP_400_BAD_REQUEST)
+            return invalid_link
 
         if not default_token_generator.check_token(user, token):
-            return Response({"detail": "Havola yaroqsiz yoki muddati tugagan."}, status=status.HTTP_400_BAD_REQUEST)
+            return invalid_link
 
         try:
             validate_password(new_password, user=user)

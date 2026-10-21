@@ -153,6 +153,7 @@ REST_FRAMEWORK = {
         "password_reset": "5/hour",
         "logout": "20/min",
         "avatar": "10/hour",
+        "password_reset_confirm": "10/hour",
     },
     "DEFAULT_RENDERER_CLASSES": (
         "rest_framework.renderers.JSONRenderer",
@@ -173,6 +174,8 @@ DEFAULT_FROM_EMAIL = "noreply@medkarta.local"
 
 # Frontend manzili - parolni tiklash havolasi shu yerga yo'naltiriladi
 FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:3000")
+# Parolni tiklash havolasi 1 soat amal qiladi (Django standarti 3 kun; pentest 2026-10-19, 7-band)
+PASSWORD_RESET_TIMEOUT = 3600
 
 
 # Redis - kesh va Celery uchun

@@ -102,3 +102,17 @@ def register_taken_exceeded(ident):
 
 def record_register_taken(ident):
     return _increment(_register_taken_key(ident), REGISTER_TAKEN_WINDOW)
+
+
+def revoke_refresh_tokens(user):
+    """Foydalanuvchining amaldagi barcha refresh tokenlarini blacklist qiladi (7-band); sonini qaytaradi."""
+    from django.utils import timezone
+    from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
+
+    active = OutstandingToken.objects.filter(
+        user=user, expires_at__gt=timezone.now(), blacklistedtoken__isnull=True
+    )
+    created = BlacklistedToken.objects.bulk_create(
+        [BlacklistedToken(token=token) for token in active], ignore_conflicts=True
+    )
+    return len(created)

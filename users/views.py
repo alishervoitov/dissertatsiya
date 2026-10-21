@@ -10,7 +10,7 @@ from rest_framework_simplejwt.views import TokenObtainPairView
 from .avatar import AvatarError, delete_old_avatar, process_avatar
 from .models import User
 from .permissions import IsAdmin
-from .security import client_ident, record_register_taken, register_taken_exceeded
+from .security import client_ident, record_register_taken, register_taken_exceeded, revoke_refresh_tokens
 from .tasks import request_password_reset
 from .serializers import (
     AdminCreateUserSerializer,
@@ -56,7 +56,7 @@ class RegisterView(generics.CreateAPIView):
         security_logger.info(
             "Yangi bemor ro'yxatdan o'tdi: %s (IP: %s)",
             request.data.get("username"),
-            request.META.get("REMOTE_ADDR"),
+            client_ident(request),
         )
         return response
 
@@ -74,13 +74,13 @@ class LoginView(TokenObtainPairView):
             security_logger.info(
                 "Muvaffaqiyatli kirish: %s (IP: %s)",
                 request.data.get("username"),
-                request.META.get("REMOTE_ADDR"),
+                client_ident(request),
             )
         else:
             security_logger.warning(
                 "Muvaffaqiyatsiz kirish urinishi: %s (IP: %s)",
                 request.data.get("username"),
-                request.META.get("REMOTE_ADDR"),
+                client_ident(request),
             )
         return response
 
@@ -104,7 +104,7 @@ class LogoutView(APIView):
         security_logger.info(
             "Chiqish: user_id=%s (IP: %s)",
             token.get("user_id"),
-            request.META.get("REMOTE_ADDR"),
+            client_ident(request),
         )
         return Response(status=status.HTTP_205_RESET_CONTENT)
 
@@ -170,7 +170,7 @@ class AvatarUploadView(APIView):
                 request.user.username,
                 avatar.name,
                 avatar.size,
-                request.META.get("REMOTE_ADDR"),
+                client_ident(request),
                 exc,
             )
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
@@ -222,6 +222,9 @@ class PasswordResetConfirmView(APIView):
     """Havoladagi uid/token asosida yangi parolni o'rnatadi."""
 
     permission_classes = [permissions.AllowAny]
+    # Token taxmin qilib bo'lmaydi (HMAC), lekin cheksiz urinishlar shovqin va resurs sarfi (7-band)
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "password_reset_confirm"
 
     def post(self, request):
         uid = request.data.get("uid")
@@ -247,10 +250,11 @@ class PasswordResetConfirmView(APIView):
         except DjangoValidationError as e:
             return Response({"detail": list(e.messages)}, status=status.HTTP_400_BAD_REQUEST)
 
-        user.set_password(new_password)
-        user.failed_login_attempts = 0
-        user.locked_until = None
-        user.save()
+        with transaction.atomic():
+            user.set_password(new_password)
+            user.save(update_fields=["password"])
+            # Hisobni egallagan kishi parol tiklangach ham sessiyada qolmasin (7-band)
+            revoked = revoke_refresh_tokens(user)
 
-        security_logger.info("Parol muvaffaqiyatli tiklandi: %s", user.username)
+        security_logger.info("Parol muvaffaqiyatli tiklandi: %s (%s ta sessiya yopildi)", user.username, revoked)
         return Response({"detail": "Parol muvaffaqiyatli yangilandi."})

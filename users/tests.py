@@ -560,3 +560,82 @@ class CaseInsensitiveUsernameTests(APITestCase):
         with self.assertRaises(IntegrityError), transaction.atomic():
             User.objects.create_user(username="ALISHER", password=STRONG_PASSWORD)
         self.assertEqual(User.objects.filter(username__iexact="alisher").count(), 1)
+
+
+REFRESH_URL = "/api/auth/login/refresh/"
+
+
+class PasswordResetConfirmHardeningTests(APITestCase):
+    """7-band: reset-confirm throttle, 1 soatlik havola, parol tiklanganda sessiyalar yopiladi."""
+
+    def setUp(self):
+        cache.clear()
+        self.user = User.objects.create_user(username="victim", email="victim@example.com", password=STRONG_PASSWORD)
+
+    def confirm(self, token="x-y", uid=None, password="Nw8$kRt3!mZq5y", ip="10.8.8.8"):
+        return self.client.post(RESET_CONFIRM_URL, {
+            "uid": uid or urlsafe_base64_encode(force_bytes(self.user.pk)), "token": token, "new_password": password,
+        }, format="json", HTTP_X_FORWARDED_FOR=ip)
+
+    def test_throttled_after_ten_requests_per_ip(self):
+        for _ in range(10):
+            self.assertEqual(self.confirm().status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(self.confirm().status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+        # Boshqa IP'ga ta'sir qilmaydi
+        self.assertEqual(self.confirm(ip="10.8.8.9").status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_valid_link_works_within_limit(self):
+        for _ in range(9):
+            self.confirm()
+        token = default_token_generator.make_token(self.user)
+        self.assertEqual(self.confirm(token=token).status_code, status.HTTP_200_OK)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password("Nw8$kRt3!mZq5y"))
+
+    def test_link_expires_after_one_hour(self):
+        from datetime import datetime, timedelta
+        from django.conf import settings
+        from django.contrib.auth.tokens import PasswordResetTokenGenerator
+
+        self.assertEqual(settings.PASSWORD_RESET_TIMEOUT, 3600)
+        token = default_token_generator.make_token(self.user)
+        later = datetime.now() + timedelta(seconds=3601)
+        with mock.patch.object(PasswordResetTokenGenerator, "_now", return_value=later):
+            self.assertEqual(self.confirm(token=token).status_code, status.HTTP_400_BAD_REQUEST)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password(STRONG_PASSWORD))
+
+    def test_reset_revokes_existing_refresh_tokens(self):
+        from rest_framework_simplejwt.tokens import RefreshToken
+
+        sessions = [str(RefreshToken.for_user(self.user)) for _ in range(2)]
+        for refresh in sessions:
+            self.assertEqual(self.client.post(REFRESH_URL, {"refresh": refresh}, format="json").status_code, 200)
+        token = default_token_generator.make_token(self.user)
+        self.assertEqual(self.confirm(token=token).status_code, status.HTTP_200_OK)
+        for refresh in sessions:
+            self.assertEqual(self.client.post(REFRESH_URL, {"refresh": refresh}, format="json").status_code, 401)
+        # Yangi parol bilan kirish ishlaydi
+        login = self.client.post("/api/auth/login/", {"username": "victim", "password": "Nw8$kRt3!mZq5y"}, format="json")
+        self.assertEqual(login.status_code, status.HTTP_200_OK)
+
+    def test_used_link_cannot_be_reused(self):
+        token = default_token_generator.make_token(self.user)
+        self.assertEqual(self.confirm(token=token).status_code, status.HTTP_200_OK)
+        self.assertEqual(self.confirm(token=token, password="Zz9!another-Pass").status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class SecurityLogClientIpTests(APITestCase):
+    """Xavfsizlik loglari nginx konteyneri (REMOTE_ADDR) emas, client_ident IP'sini yozadi."""
+
+    def setUp(self):
+        cache.clear()
+        User.objects.create_user(username="logged", password=STRONG_PASSWORD)
+
+    def test_rejected_avatar_logs_forwarded_client_ip(self):
+        self.client.force_authenticate(User.objects.get(username="logged"))
+        with self.assertLogs("security", level="WARNING") as logs:
+            self.client.post(AVATAR_URL, {"avatar": upload("shell.php", PHP_PAYLOAD, "image/png")}, format="multipart",
+                             HTTP_X_FORWARDED_FOR="203.0.113.7", REMOTE_ADDR="172.18.0.6")
+        self.assertTrue(any("IP: 203.0.113.7" in line for line in logs.output), logs.output)
+        self.assertFalse(any("172.18.0.6" in line for line in logs.output), logs.output)

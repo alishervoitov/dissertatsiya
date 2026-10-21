@@ -15,16 +15,26 @@ def deactivate_expired_prescriptions():
     """
     from datetime import timedelta
 
+    from django.db import transaction
+
+    from .audit import log_audit
     from .models import Prescription
 
     today = timezone.now().date()
     expired_count = 0
 
-    for prescription in Prescription.objects.filter(is_active=True):
+    for prescription in Prescription.objects.filter(is_active=True).select_related("patient", "medical_record"):
         end_date = prescription.start_date + timedelta(days=prescription.duration_days)
         if end_date < today:
-            prescription.is_active = False
-            prescription.save(update_fields=["is_active"])
+            # Tibbiy yozuv o'zgarishi audit izisiz qolmasin: yopish va audit birga yoziladi (actor=None - tizim)
+            with transaction.atomic():
+                prescription.is_active = False
+                prescription.save(update_fields=["is_active", "updated_at"])
+                log_audit(
+                    None, "update",
+                    patient=prescription.patient, medical_record=prescription.medical_record,
+                    detail=f"Retsept #{prescription.pk} muddati tugagani ({end_date}) uchun avtomatik yopildi (davriy vazifa)",
+                )
             expired_count += 1
 
     security_logger.info("Davriy vazifa: %s ta retsept muddati tugagani uchun yopildi", expired_count)

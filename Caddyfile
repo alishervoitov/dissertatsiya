@@ -1,0 +1,9 @@
+medsecure.uz, www.medsecure.uz {
+    encode gzip
+    header {
+        Strict-Transport-Security "max-age=86400"
+        Cross-Origin-Opener-Policy "same-origin"
+        Cross-Origin-Resource-Policy "same-origin"
+    }
+    reverse_proxy web:80
+}

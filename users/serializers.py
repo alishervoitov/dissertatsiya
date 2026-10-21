@@ -1,23 +1,46 @@
 from django.contrib.auth import password_validation
+from django.contrib.auth.validators import UnicodeUsernameValidator
 from django.db import transaction
 from rest_framework import serializers
+from rest_framework.exceptions import AuthenticationFailed
+from rest_framework.validators import UniqueValidator
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
-from rest_framework import serializers
-from .models import User
-from datetime import timedelta
-from django.utils import timezone
-from rest_framework import serializers
-from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
+
 from .models import Role, User
+from .security import (
+    LOCKOUT_DURATION,
+    client_ident,
+    clear_login_failures,
+    is_login_locked,
+    is_reserved_username,
+    register_login_failure,
+    security_logger,
+)
+
+# Username'ni qaytarmaydi; view "unique" kodi bo'yicha bunday javoblarni sanaydi (5-band).
+USERNAME_TAKEN_MESSAGE = "Bu foydalanuvchi nomi band, boshqasini tanlang."
+USERNAME_RESERVED_MESSAGE = "Bu foydalanuvchi nomidan foydalanib bo'lmaydi."
+# Noto'g'ri parol, mavjud bo'lmagan hisob va bloklangan hisob uchun bir xil javob (5-band).
+LOGIN_FAILED_MESSAGE = "Login yoki parol noto'g'ri, yoki hisob vaqtincha bloklangan."
 
 
-class UserPublicSerializer(serializers.ModelSerializer):
-    """Parolsiz, faqat ochiq profil ma'lumotlari."""
+CASE_INSENSITIVE_USERNAME_VALIDATORS = [
+    UnicodeUsernameValidator(),
+    UniqueValidator(queryset=User.objects.all(), message=USERNAME_TAKEN_MESSAGE, lookup="iexact"),
+]
 
-    class Meta:
-        model = User
-        fields = ["id", "username", "first_name", "last_name", "email", "phone", "role", "created_at"]
-        read_only_fields = ["id", "role", "created_at"]
+
+class ReservedOrUniqueUsernameValidator(UniqueValidator):
+    """
+    Avval zaxira nom (6-band), keyin bandlik tekshiriladi. Bitta validator bo'lgani uchun
+    zaxira nom (masalan mavjud 'admin') "band" xatosini qo'shimcha qaytarmaydi va 5-banddagi
+    "band" hisoblagichiga kirmaydi.
+    """
+
+    def __call__(self, value, serializer_field):
+        if is_reserved_username(value):
+            raise serializers.ValidationError(USERNAME_RESERVED_MESSAGE, code="reserved")
+        super().__call__(value, serializer_field)
 
 
 class RegisterSerializer(serializers.ModelSerializer):
@@ -36,6 +59,16 @@ class RegisterSerializer(serializers.ModelSerializer):
             "id", "username", "first_name", "last_name",
             "email", "phone", "password", "password_confirm",
         ]
+        extra_kwargs = {
+            "username": {
+                "validators": [
+                    UnicodeUsernameValidator(),
+                    ReservedOrUniqueUsernameValidator(
+                        queryset=User.objects.all(), message=USERNAME_TAKEN_MESSAGE, lookup="iexact"
+                    ),
+                ],
+            },
+        }
 
     def validate(self, attrs):
         if attrs["password"] != attrs.pop("password_confirm"):
@@ -63,6 +96,8 @@ class AdminCreateUserSerializer(serializers.ModelSerializer):
             "id", "username", "first_name", "last_name",
             "email", "phone", "password", "role",
         ]
+        # Zaxira nom tekshiruvi yo'q (6-band: admin xizmat hisoblarini yarata oladi), lekin registrsiz bandlik bor
+        extra_kwargs = {"username": {"validators": CASE_INSENSITIVE_USERNAME_VALIDATORS}}
 
     def validate_password(self, value):
         password_validation.validate_password(value)
@@ -78,10 +113,6 @@ class AdminCreateUserSerializer(serializers.ModelSerializer):
 
 
 
-MAX_FAILED_ATTEMPTS = 5
-LOCKOUT_DURATION = timedelta(minutes=15)
-
-
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
     @classmethod
     def get_token(cls, user):
@@ -91,32 +122,24 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
         return token
 
     def validate(self, attrs):
-        username = attrs.get("username")
-        user = User.objects.filter(username=username).first()
+        # Bloklash username+IP bo'yicha cache'da; hisob bor-yo'qligidan qat'i nazar bir xil ishlaydi.
+        username = attrs.get(self.username_field)
+        ident = client_ident(self.context["request"])
 
-        if user and user.is_locked:
-            remaining = int((user.locked_until - timezone.now()).total_seconds() / 60) + 1
-            raise serializers.ValidationError(
-                f"Hisob vaqtincha bloklangan. {remaining} daqiqadan so'ng qayta urinib ko'ring."
-            )
+        if is_login_locked(username, ident):
+            raise AuthenticationFailed(LOGIN_FAILED_MESSAGE, code="login_failed")
 
         try:
             data = super().validate(attrs)
-        except Exception:
-            # Muvaffaqiyatsiz urinish - hisoblagichni oshiramiz
-            if user:
-                user.failed_login_attempts += 1
-                if user.failed_login_attempts >= MAX_FAILED_ATTEMPTS:
-                    user.locked_until = timezone.now() + LOCKOUT_DURATION
-                    user.failed_login_attempts = 0
-                user.save(update_fields=["failed_login_attempts", "locked_until"])
-            raise
+        except AuthenticationFailed:
+            if register_login_failure(username, ident):
+                security_logger.warning(
+                    "Login bloklandi: %r (IP: %s, %s daqiqa)",
+                    username, ident, int(LOCKOUT_DURATION.total_seconds() // 60),
+                )
+            raise AuthenticationFailed(LOGIN_FAILED_MESSAGE, code="login_failed")
 
-        # Muvaffaqiyatli login - hisoblagichni tozalaymiz
-        if user:
-            user.failed_login_attempts = 0
-            user.locked_until = None
-            user.save(update_fields=["failed_login_attempts", "locked_until"])
+        clear_login_failures(username, ident)
 
         data["role"] = self.user.role
         data["user"] = UserPublicSerializer(self.user, context=self.context).data
@@ -131,6 +154,8 @@ class UserPublicSerializer(serializers.ModelSerializer):
         model = User
         fields = ["id", "username", "first_name", "last_name", "email", "phone", "role", "avatar_url", "created_at"]
         read_only_fields = ["id", "role", "created_at"]
+        # Admin PATCH orqali boshqa hisobning registr varianti nomiga o'tkazib bo'lmasin
+        extra_kwargs = {"username": {"validators": CASE_INSENSITIVE_USERNAME_VALIDATORS}}
 
     def get_avatar_url(self, obj):
         request = self.context.get("request")

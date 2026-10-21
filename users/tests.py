@@ -15,6 +15,7 @@ from django.core.cache import cache
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.db import IntegrityError, transaction
 from PIL import Image, features
 from django.utils.encoding import force_bytes
 from django.utils.http import urlsafe_base64_encode
@@ -501,3 +502,61 @@ class ReservedUsernameTests(APITestCase):
         }, format="json")
         self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.content)
         self.assertTrue(User.objects.filter(username="support").exists())
+
+
+class CaseInsensitiveUsernameTests(APITestCase):
+    """'Alisher' va 'alisher' ikki xil hisob bo'lmasin: register, admin yaratish va admin PATCH."""
+
+    def setUp(self):
+        cache.clear()
+        self.existing = User.objects.create_user(username="alisher", password=STRONG_PASSWORD)
+        self.admin = User.objects.create_user(username="chief", password=STRONG_PASSWORD, role=Role.ADMIN)
+
+    def register(self, username, ip="10.7.7.7"):
+        return self.client.post(REGISTER_URL, {
+            "username": username, "first_name": "Test", "last_name": "User", "email": "", "phone": "",
+            "password": STRONG_PASSWORD, "password_confirm": STRONG_PASSWORD,
+        }, format="json", HTTP_X_FORWARDED_FOR=ip)
+
+    @mock.patch.object(ScopedRateThrottle, "allow_request", return_value=True)
+    def test_register_case_variant_rejected_and_counted_as_taken(self, _):
+        for name in ["Alisher", "ALISHER", "aLiShEr"]:
+            with self.subTest(name=name):
+                response = self.register(name)
+                self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+                self.assertEqual(response.json()["username"], [USERNAME_TAKEN_MESSAGE])
+        self.assertEqual(User.objects.filter(username__iexact="alisher").count(), 1)
+        # Registr varianti ham 5-banddagi "band" hisoblagichiga kiradi
+        for _ in range(REGISTER_TAKEN_LIMIT - 3):
+            self.register("Alisher")
+        self.assertEqual(self.register("brandnew").status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+
+    def test_admin_create_case_variant_rejected(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.post(ADMIN_USERS_URL, {
+            "username": "ALISHER", "first_name": "A", "last_name": "B", "email": "", "phone": "",
+            "password": STRONG_PASSWORD, "role": Role.DOCTOR,
+        }, format="json")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST, response.content)
+        self.assertEqual(response.json()["username"], [USERNAME_TAKEN_MESSAGE])
+
+    def test_admin_rename_to_other_users_case_variant_rejected(self):
+        other = User.objects.create_user(username="bobur", password=STRONG_PASSWORD)
+        self.client.force_authenticate(self.admin)
+        response = self.client.patch(f"{ADMIN_USERS_URL}{other.pk}/", {"username": "Alisher"}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST, response.content)
+        other.refresh_from_db()
+        self.assertEqual(other.username, "bobur")
+
+    def test_admin_can_change_case_of_own_name(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.patch(f"{ADMIN_USERS_URL}{self.existing.pk}/", {"username": "Alisher"}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.content)
+        self.existing.refresh_from_db()
+        self.assertEqual(self.existing.username, "Alisher")
+
+    def test_database_constraint_blocks_other_paths(self):
+        # Admin sayti, shell, seed_demo kabi API'dan tashqari yo'llar
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            User.objects.create_user(username="ALISHER", password=STRONG_PASSWORD)
+        self.assertEqual(User.objects.filter(username__iexact="alisher").count(), 1)

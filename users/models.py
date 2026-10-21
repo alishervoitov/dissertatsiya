@@ -1,5 +1,6 @@
 from django.contrib.auth.models import AbstractUser
 from django.db import models
+from django.db.models.functions import Lower
 
 
 class Role(models.TextChoices):
@@ -19,6 +20,17 @@ class User(AbstractUser):
         default=False, help_text="Kelajakda ikki bosqichli autentifikatsiya uchun"
     )
     created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta(AbstractUser.Meta):
+        constraints = [
+            # 'Alisher' va 'alisher' ikki xil hisob bo'lmasin (taqlid xavfi). API validatorlaridan
+            # tashqari admin sayti, shell va bir vaqtdagi so'rovlarni ham qamraydi.
+            models.UniqueConstraint(
+                Lower("username"),
+                name="users_user_username_ci_uniq",
+                violation_error_message="Bu foydalanuvchi nomi band, boshqasini tanlang.",
+            ),
+        ]
 
     def __str__(self):
         return f"{self.get_full_name() or self.username} ({self.get_role_display()})"

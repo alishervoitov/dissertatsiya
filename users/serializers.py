@@ -25,6 +25,12 @@ USERNAME_RESERVED_MESSAGE = "Bu foydalanuvchi nomidan foydalanib bo'lmaydi."
 LOGIN_FAILED_MESSAGE = "Login yoki parol noto'g'ri, yoki hisob vaqtincha bloklangan."
 
 
+CASE_INSENSITIVE_USERNAME_VALIDATORS = [
+    UnicodeUsernameValidator(),
+    UniqueValidator(queryset=User.objects.all(), message=USERNAME_TAKEN_MESSAGE, lookup="iexact"),
+]
+
+
 class UserPublicSerializer(serializers.ModelSerializer):
     """Parolsiz, faqat ochiq profil ma'lumotlari."""
 
@@ -67,7 +73,9 @@ class RegisterSerializer(serializers.ModelSerializer):
             "username": {
                 "validators": [
                     UnicodeUsernameValidator(),
-                    ReservedOrUniqueUsernameValidator(queryset=User.objects.all(), message=USERNAME_TAKEN_MESSAGE),
+                    ReservedOrUniqueUsernameValidator(
+                        queryset=User.objects.all(), message=USERNAME_TAKEN_MESSAGE, lookup="iexact"
+                    ),
                 ],
             },
         }
@@ -98,6 +106,8 @@ class AdminCreateUserSerializer(serializers.ModelSerializer):
             "id", "username", "first_name", "last_name",
             "email", "phone", "password", "role",
         ]
+        # Zaxira nom tekshiruvi yo'q (6-band: admin xizmat hisoblarini yarata oladi), lekin registrsiz bandlik bor
+        extra_kwargs = {"username": {"validators": CASE_INSENSITIVE_USERNAME_VALIDATORS}}
 
     def validate_password(self, value):
         password_validation.validate_password(value)
@@ -150,6 +160,8 @@ class UserPublicSerializer(serializers.ModelSerializer):
         model = User
         fields = ["id", "username", "first_name", "last_name", "email", "phone", "role", "avatar_url", "created_at"]
         read_only_fields = ["id", "role", "created_at"]
+        # Admin PATCH orqali boshqa hisobning registr varianti nomiga o'tkazib bo'lmasin
+        extra_kwargs = {"username": {"validators": CASE_INSENSITIVE_USERNAME_VALIDATORS}}
 
     def get_avatar_url(self, obj):
         request = self.context.get("request")

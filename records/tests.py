@@ -1,16 +1,24 @@
 """
-Muddati o'tgan retseptlarni yopish davriy vazifasi testlari.
+Muddati o'tgan retseptlarni yopish davriy vazifasi va kasallik tarixi PDF testlari.
 Ishlatish: python manage.py test records --settings=config.settings_test
 """
+import tempfile
 from datetime import timedelta
+from io import BytesIO
 
+from cryptography.fernet import Fernet
 from django.conf import settings
-from django.test import TestCase
+from django.core.files.base import ContentFile
+from django.core.files.storage import default_storage
+from django.test import TestCase, override_settings
 from django.utils import timezone
+from PIL import Image
+from rest_framework.test import APITestCase
 
 from users.models import Role, User
 
-from .models import AuditLog, Patient, Prescription
+from .models import AuditLog, MedicalRecord, Patient, Prescription
+from .pdf_export import _text
 from .tasks import deactivate_expired_prescriptions
 
 
@@ -90,3 +98,76 @@ class BeatScheduleTests(TestCase):
         self.assertIsNone(task.last_run_at)
         is_due, _next = scheduler.schedule["deactivate-expired-prescriptions"].is_due()
         self.assertFalse(is_due)
+
+
+def png_bytes():
+    buf = BytesIO()
+    Image.new("RGB", (16, 16), (200, 30, 30)).save(buf, "PNG")
+    return buf.getvalue()
+
+
+# MedicalRecord tibbiy maydonlari shifrlangan: testlar uchun bir martalik kalit
+@override_settings(FIELD_ENCRYPTION_KEY=Fernet.generate_key().decode())
+class PatientHistoryPDFTests(APITestCase):
+    """Foydalanuvchi matni reportlab belgilashi sifatida talqin qilinmasin (ZAP 2026-10-23: history-pdf 500)."""
+
+    def setUp(self):
+        self.doctor = User.objects.create_user(username="pdfdoc", password="x", role=Role.DOCTOR)
+        patient_user = User.objects.create_user(username="pdfpat", password="x", role=Role.PATIENT)
+        self.patient = Patient.objects.get(user=patient_user)
+        self.client.force_authenticate(self.doctor)
+
+    def record(self, **fields):
+        data = {"title": "Ko'rik", "diagnosis": "Gripp", "treatment": "Dam olish", "notes": ""}
+        data.update(fields)
+        return MedicalRecord.objects.create(
+            patient=self.patient, created_by=self.doctor, visit_date=timezone.now(), **data
+        )
+
+    def get_pdf(self):
+        response = self.client.get(f"/api/records/patients/{self.patient.pk}/history-pdf/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "application/pdf")
+        return b"".join(response.streaming_content)
+
+    def test_unclosed_tag_does_not_break_pdf(self):
+        self.record(title="<b>Sarlavha", diagnosis="</p><scrIpt>alert(1);</scRipt><p>", treatment="<font", notes="<i>")
+        self.assertTrue(self.get_pdf().startswith(b"%PDF"))
+
+    def test_img_tag_does_not_embed_server_file(self):
+        with tempfile.NamedTemporaryFile(suffix=".png") as f:
+            f.write(png_bytes())
+            f.flush()
+            self.record(diagnosis=f'<img src="{f.name}" width="40" height="40"/>')
+            self.assertNotIn(b"/Subtype /Image", self.get_pdf())
+
+    def test_link_tag_does_not_create_link(self):
+        self.record(notes='<a href="https://evil.example/">bosing</a>')
+        self.assertNotIn(b"/URI", self.get_pdf())
+
+    def test_doctor_name_is_escaped(self):
+        self.doctor.first_name = "<b>Ism"
+        self.doctor.save(update_fields=["first_name"])
+        self.record()
+        self.assertTrue(self.get_pdf().startswith(b"%PDF"))
+
+    def test_text_helper_escapes_and_keeps_line_breaks(self):
+        self.assertEqual(_text("a < b & c > d"), "a &lt; b &amp; c &gt; d")
+        self.assertEqual(_text("1-qator\r\n2-qator\n<b>"), "1-qator<br/>2-qator<br/>&lt;b&gt;")
+
+    def set_avatar(self, name, data):
+        user = self.patient.user
+        user.avatar.name = default_storage.save(name, ContentFile(data))
+        user.save(update_fields=["avatar"])
+
+    def test_non_image_avatar_does_not_break_pdf(self):
+        self.record()
+        for name, data in (("avatars/x.jpg", b"<?php echo 1; ?>"), ("avatars/y.bin", b"\x00" * 64)):
+            with self.subTest(name=name):
+                self.set_avatar(name, data)
+                self.assertNotIn(b"/Subtype /Image", self.get_pdf())
+
+    def test_valid_avatar_still_embedded(self):
+        self.record()
+        self.set_avatar("avatars/ok.png", png_bytes())
+        self.assertIn(b"/Subtype /Image", self.get_pdf())

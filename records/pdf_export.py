@@ -5,11 +5,13 @@ Uch tilni qo'llab-quvvatlaydi: uz (o'zbek), ru (rus), en (ingliz).
 
 import os
 from io import BytesIO
+from xml.sax.saxutils import escape
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
+from reportlab.lib.utils import ImageReader
 from reportlab.platypus import (
     SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image,
 )
@@ -84,12 +86,24 @@ TRANSLATIONS = {
 }
 
 
+def _text(value):
+    """
+    Foydalanuvchi kiritgan matn Paragraph'ga faqat shu orqali beriladi: reportlab matnni belgilash
+    sifatida o'qiydi, escape'siz yopilmagan teg 500 beradi, <img src> esa serverdagi faylni PDF'ga
+    joylaydi (ZAP 2026-10-23). Qator ko'chishlari saqlanadi.
+    """
+    return escape(str(value)).replace("\r\n", "\n").replace("\n", "<br/>")
+
+
 def _get_avatar_flowable(user, size=28 * mm):
     if not user.avatar or not hasattr(user.avatar, "path"):
         return None
     try:
         if not os.path.exists(user.avatar.path):
             return None
+        # Image() faylni doc.build() paytida o'qiydi: rasm bo'lmagan fayl (eski yuklashlar) butun PDF'ni
+        # yiqitmasligi uchun shu yerda tekshiriladi, PDF avatarsiz yasaladi
+        ImageReader(user.avatar.path).getSize()
         img = Image(user.avatar.path, width=size, height=size)
         img.hAlign = "LEFT"
         return img
@@ -171,17 +185,17 @@ def build_patient_history_pdf(patient, records, lang="uz"):
         elements.append(Paragraph(tr["no_records"], body_style))
     else:
         for r in records:
-            record_title = f"{r.visit_date.strftime('%Y-%m-%d')} — {r.title}"
+            record_title = f"{r.visit_date.strftime('%Y-%m-%d')} — {_text(r.title)}"
             elements.append(Paragraph(record_title, section_style))
-            type_label = tr["record_types"].get(r.record_type, r.record_type)
-            doctor_name = r.created_by.get_full_name() or r.created_by.username
+            type_label = _text(tr["record_types"].get(r.record_type, r.record_type))
+            doctor_name = _text(r.created_by.get_full_name() or r.created_by.username)
             elements.append(Paragraph(f"{tr['type']}: {type_label} · {tr['doctor']}: {doctor_name}", label_style))
             if r.diagnosis:
-                elements.append(Paragraph(f"<b>{tr['diagnosis']}:</b> {r.diagnosis}", body_style))
+                elements.append(Paragraph(f"<b>{tr['diagnosis']}:</b> {_text(r.diagnosis)}", body_style))
             if r.treatment:
-                elements.append(Paragraph(f"<b>{tr['treatment']}:</b> {r.treatment}", body_style))
+                elements.append(Paragraph(f"<b>{tr['treatment']}:</b> {_text(r.treatment)}", body_style))
             if r.notes:
-                elements.append(Paragraph(f"<b>{tr['notes']}:</b> {r.notes}", body_style))
+                elements.append(Paragraph(f"<b>{tr['notes']}:</b> {_text(r.notes)}", body_style))
             elements.append(Spacer(1, 4 * mm))
 
     doc.build(elements)

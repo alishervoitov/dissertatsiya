@@ -354,6 +354,17 @@ class RegisterEnumerationTests(APITestCase):
         self.assertEqual(response.json()["username"], [USERNAME_TAKEN_MESSAGE])
         self.assertNotIn("takenuser", response.content.decode())
 
+    def test_password_equal_to_username_rejected(self):
+        # Parol username bilan bir xil bo'lsa UserAttributeSimilarityValidator rad etadi.
+        # "similaruser": 11 belgi (min_length o'tadi), raqam emas, keng tarqalgan emas -
+        # ya'ni 400 faqat o'xshashlik validatori tufayli bo'ladi.
+        before = User.objects.count()
+        response = self.register("similaruser", password="similaruser", confirm="similaruser")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST, response.content)
+        self.assertEqual(User.objects.count(), before)
+        body = response.json()
+        self.assertTrue(body.get("non_field_errors") or body.get("password"), response.content)
+
     def test_taken_probe_with_bad_password_creates_nothing(self):
         before = User.objects.count()
         response = self.register("takenuser", password="short", confirm="other")

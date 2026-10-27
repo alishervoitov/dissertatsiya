@@ -73,14 +73,22 @@ class RegisterSerializer(serializers.ModelSerializer):
     def validate(self, attrs):
         if attrs["password"] != attrs.pop("password_confirm"):
             raise serializers.ValidationError({"password_confirm": "Parollar mos kelmadi."})
-        password_validation.validate_password(attrs["password"])
+        # Saqlanmagan User nusxasi: UserAttributeSimilarityValidator parolni
+        # username/email/ism bilan solishtira olishi uchun (DB'ga tegmaydi).
+        probe = User(
+            username=attrs.get("username", ""),
+            first_name=attrs.get("first_name", ""),
+            last_name=attrs.get("last_name", ""),
+            email=attrs.get("email", ""),
+        )
+        password_validation.validate_password(attrs["password"], probe)
         return attrs
 
     @transaction.atomic
     def create(self, validated_data):
         password = validated_data.pop("password")
         user = User(role=Role.PATIENT, **validated_data)
-        user.set_password(password)  # Argon2 hash - hech qachon ochiq matn saqlanmaydi
+        user.set_password(password)  # PBKDF2 hash (Django sukut) - hech qachon ochiq matn saqlanmaydi
         user.save()
         return user
 
@@ -100,7 +108,15 @@ class AdminCreateUserSerializer(serializers.ModelSerializer):
         extra_kwargs = {"username": {"validators": CASE_INSENSITIVE_USERNAME_VALIDATORS}}
 
     def validate_password(self, value):
-        password_validation.validate_password(value)
+        data = self.initial_data
+        # Saqlanmagan User nusxasi: UserAttributeSimilarityValidator uchun (DB'ga tegmaydi).
+        probe = User(
+            username=data.get("username", ""),
+            first_name=data.get("first_name", ""),
+            last_name=data.get("last_name", ""),
+            email=data.get("email", ""),
+        )
+        password_validation.validate_password(value, probe)
         return value
 
     def create(self, validated_data):

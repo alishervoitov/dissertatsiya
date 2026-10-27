@@ -57,3 +57,6 @@ htmlcov/
 Thumbs.db
 # Claude Code ishchi konteksti (commit qilinmaydi)
 CLAUDE.md
+
+# Zaxira nusxalar
+*.bak

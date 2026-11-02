@@ -14,6 +14,7 @@ from .security import client_ident, record_register_taken, register_taken_exceed
 from .tasks import request_password_reset
 from .serializers import (
     AdminCreateUserSerializer,
+    AdminUserListSerializer,
     CustomTokenObtainPairSerializer,
     RegisterSerializer,
     UserPublicSerializer,
@@ -125,13 +126,13 @@ class AdminUserListCreateView(generics.ListCreateAPIView):
     yangi shifokor/administrator hisoblarini yaratish.
     """
 
-    queryset = User.objects.all().order_by("-created_at")
+    queryset = User.objects.select_related("doctor_profile").order_by("-created_at")
     permission_classes = [IsAdmin]
 
     def get_serializer_class(self):
         if self.request.method == "POST":
             return AdminCreateUserSerializer
-        return UserPublicSerializer
+        return AdminUserListSerializer
 
     def perform_create(self, serializer):
         user = serializer.save()

@@ -159,6 +159,19 @@ class DoctorSettingsView(APIView):
         return Response(s.data)
 
 
+class AdminDoctorProfileView(APIView):
+    """Administrator shifokorning mutaxassisligi, xonasi va ish vaqtini o'zgartiradi."""
+
+    permission_classes = [IsAdmin]
+
+    def patch(self, request, doctor_id):
+        profile = get_object_or_404(DoctorProfile, user_id=doctor_id, user__role=Role.DOCTOR)
+        s = DoctorProfileSerializer(profile, data=request.data, partial=True)
+        s.is_valid(raise_exception=True)
+        s.save()
+        return Response(s.data)
+
+
 # ---------- Registratura (administrator) ----------
 
 class RegistryTicketView(APIView):

@@ -97,12 +97,15 @@ class AdminCreateUserSerializer(serializers.ModelSerializer):
     """Administrator shifokor yoki boshqa admin hisoblarini yaratishi uchun."""
 
     password = serializers.CharField(write_only=True, min_length=10)
+    # Shifokor yaratilganda darhol qabul sozlamalari (navbatda shu yo'nalish bo'yicha topiladi)
+    specialty = serializers.CharField(write_only=True, required=False, allow_blank=True, max_length=30)
+    room = serializers.CharField(write_only=True, required=False, allow_blank=True, max_length=20)
 
     class Meta:
         model = User
         fields = [
             "id", "username", "first_name", "last_name",
-            "email", "phone", "password", "role",
+            "email", "phone", "password", "role", "specialty", "room",
         ]
         # Zaxira nom tekshiruvi yo'q (6-band: admin xizmat hisoblarini yarata oladi), lekin registrsiz bandlik bor
         extra_kwargs = {"username": {"validators": CASE_INSENSITIVE_USERNAME_VALIDATORS}}
@@ -119,11 +122,24 @@ class AdminCreateUserSerializer(serializers.ModelSerializer):
         password_validation.validate_password(value, probe)
         return value
 
+    def validate_specialty(self, value):
+        from appointments.models import Specialty
+
+        if value and value not in Specialty.values:
+            raise serializers.ValidationError("Noma'lum mutaxassislik.")
+        return value
+
     def create(self, validated_data):
         password = validated_data.pop("password")
+        specialty = validated_data.pop("specialty", "")
+        room = validated_data.pop("room", "")
         user = User(**validated_data)
         user.set_password(password)
         user.save()
+        if user.role == Role.DOCTOR:
+            from appointments.models import DoctorProfile
+
+            DoctorProfile.objects.update_or_create(user=user, defaults={"specialty": specialty, "room": room})
         return user
 
 
@@ -178,3 +194,24 @@ class UserPublicSerializer(serializers.ModelSerializer):
         if obj.avatar and request:
             return request.build_absolute_uri(obj.avatar.url)
         return None
+
+
+class AdminUserListSerializer(UserPublicSerializer):
+    """Admin ro'yxati: shifokorlar uchun mutaxassislik va xona ham ko'rinadi."""
+
+    specialty = serializers.SerializerMethodField()
+    room = serializers.SerializerMethodField()
+
+    class Meta(UserPublicSerializer.Meta):
+        fields = UserPublicSerializer.Meta.fields + ["specialty", "room"]
+
+    def _profile(self, obj):
+        return getattr(obj, "doctor_profile", None) if obj.role == Role.DOCTOR else None
+
+    def get_specialty(self, obj):
+        p = self._profile(obj)
+        return p.specialty if p else None
+
+    def get_room(self, obj):
+        p = self._profile(obj)
+        return p.room if p else None

@@ -12,6 +12,7 @@ urlpatterns = [
     path("doctor/finish/", views.DoctorFinishView.as_view(), name="queue-doctor-finish"),
     path("doctor/tickets/<int:pk>/no-show/", views.DoctorNoShowView.as_view(), name="queue-doctor-noshow"),
     path("doctor/settings/", views.DoctorSettingsView.as_view(), name="queue-doctor-settings"),
+    path("doctors/<int:doctor_id>/profile/", views.AdminDoctorProfileView.as_view(), name="queue-admin-doctor-profile"),
     path("registry/", views.RegistryTicketView.as_view(), name="queue-registry"),
     path("kiosk/doctors/", views.KioskDoctorListView.as_view(), name="queue-kiosk-doctors"),
     path("kiosk/tickets/", views.KioskTicketView.as_view(), name="queue-kiosk-take"),

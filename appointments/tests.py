@@ -247,3 +247,36 @@ class SpecialtyMigrationTests(QueueTestBase):
             DoctorProfile.objects.filter(pk=self.profile.pk).update(specialty=text)
             mig.to_codes(global_apps, None)
             self.assertEqual(DoctorProfile.objects.get(pk=self.profile.pk).specialty, code)
+
+
+class AdminDoctorSpecialtyTests(QueueTestBase):
+    def test_admin_creates_doctor_with_specialty(self):
+        self.client.force_authenticate(self.admin)
+        r = self.client.post("/api/auth/users/", {
+            "username": "newdoc", "first_name": "Kamola", "last_name": "Aliyeva", "email": "",
+            "phone": "", "password": "Xk9#mPq2$vLw", "role": "doctor", "specialty": "dentist", "room": "3",
+        }, format="json")
+        self.assertEqual(r.status_code, 201, r.data)
+        p = DoctorProfile.objects.get(user__username="newdoc")
+        self.assertEqual((p.specialty, p.room), ("dentist", "3"))
+        users = self.client.get("/api/auth/users/").data
+        row = next(u for u in users if u["username"] == "newdoc")
+        self.assertEqual(row["specialty"], "dentist")
+        self.assertIsNone(next(u for u in users if u["username"] == "pat")["specialty"])
+
+    def test_unknown_specialty_rejected(self):
+        self.client.force_authenticate(self.admin)
+        r = self.client.post("/api/auth/users/", {
+            "username": "baddoc", "first_name": "A", "last_name": "B", "password": "Xk9#mPq2$vLw",
+            "role": "doctor", "specialty": "Tish doktori",
+        }, format="json")
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("specialty", r.data)
+
+    def test_admin_edits_doctor_specialty(self):
+        url = f"/api/queue/doctors/{self.doctor2.id}/profile/"
+        self.client.force_authenticate(self.doctor)
+        self.assertEqual(self.client.patch(url, {"specialty": "ent"}, format="json").status_code, 403)
+        self.client.force_authenticate(self.admin)
+        self.assertEqual(self.client.patch(url, {"specialty": "ent"}, format="json").data["specialty"], "ent")
+        self.assertEqual(self.client.patch(f"/api/queue/doctors/{self.pat_user.id}/profile/", {"specialty": "ent"}, format="json").status_code, 404)

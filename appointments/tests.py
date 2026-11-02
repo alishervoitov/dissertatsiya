@@ -33,7 +33,7 @@ class QueueTestBase(APITestCase):
         self.doctor = User.objects.create_user(username="doc", password="x", role=Role.DOCTOR, first_name="Aziz")
         self.doctor2 = User.objects.create_user(username="doc2", password="x", role=Role.DOCTOR)
         self.profile = DoctorProfile.objects.get(user=self.doctor)
-        self.profile.specialty, self.profile.avg_minutes = "Terapevt", 15
+        self.profile.specialty, self.profile.avg_minutes = "therapist", 15
         self.profile.work_start, self.profile.work_end = time(9, 0), time(17, 0)
         self.profile.save()
         self.pat_user = User.objects.create_user(username="pat", password="x", role=Role.PATIENT)
@@ -203,8 +203,16 @@ class DoctorActionsTests(QueueTestBase):
         self.client.force_authenticate(self.doctor)
         r = self.client.patch("/api/queue/doctor/settings/", {"work_start": "18:00", "work_end": "09:00"}, format="json")
         self.assertEqual(r.status_code, 400)
-        r = self.client.patch("/api/queue/doctor/settings/", {"avg_minutes": 20, "room": "12"}, format="json")
+        r = self.client.patch("/api/queue/doctor/settings/", {"avg_minutes": 20, "room": "12", "specialty": "dentist"}, format="json")
         self.assertEqual(r.data["avg_minutes"], 20)
+        self.assertEqual(r.data["specialty"], "dentist")
+        r = self.client.patch("/api/queue/doctor/settings/", {"specialty": "Tish doktori"}, format="json")
+        self.assertEqual(r.status_code, 400)
+
+    def test_doctor_list_returns_specialty_code(self):
+        self.client.force_authenticate(self.pat_user)
+        doctors = self.client.get("/api/queue/doctors/").data
+        self.assertEqual(next(d for d in doctors if d["id"] == self.doctor.id)["specialty"], "therapist")
 
 
 class KioskTests(QueueTestBase):
@@ -227,3 +235,15 @@ class KioskTests(QueueTestBase):
         self.client.force_authenticate(None)
         r = self.client.get("/api/queue/kiosk/doctors/", HTTP_X_KIOSK_KEY="s3cret-kiosk")
         self.assertEqual(r.status_code, 200)
+
+
+class SpecialtyMigrationTests(QueueTestBase):
+    def test_free_text_mapped_to_codes(self):
+        from importlib import import_module
+        from django.apps import apps as global_apps
+        mig = import_module("appointments.migrations.0003_specialty_choices")
+        cases = {"Okulist": "ophthalmologist", "стоматолог": "dentist", "Bosh vrach": "other", "therapist": "therapist"}
+        for text, code in cases.items():
+            DoctorProfile.objects.filter(pk=self.profile.pk).update(specialty=text)
+            mig.to_codes(global_apps, None)
+            self.assertEqual(DoctorProfile.objects.get(pk=self.profile.pk).specialty, code)

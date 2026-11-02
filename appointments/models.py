@@ -11,6 +11,26 @@ from django.db import models
 from records.encryption import EncryptedCharField
 
 
+class Specialty(models.TextChoices):
+    """Mutaxassisliklar ro'yxati: bemor shu bo'yicha qidiradi. Nomlar frontendda 3 tilga tarjima qilinadi."""
+
+    THERAPIST = "therapist", "Terapevt"
+    PEDIATRICIAN = "pediatrician", "Pediatr"
+    DENTIST = "dentist", "Stomatolog"
+    OPHTHALMOLOGIST = "ophthalmologist", "Oftalmolog (okulist)"
+    CARDIOLOGIST = "cardiologist", "Kardiolog"
+    NEUROLOGIST = "neurologist", "Nevrolog"
+    ENT = "ent", "LOR (otorinolaringolog)"
+    SURGEON = "surgeon", "Jarroh"
+    GYNECOLOGIST = "gynecologist", "Ginekolog"
+    DERMATOLOGIST = "dermatologist", "Dermatolog"
+    ENDOCRINOLOGIST = "endocrinologist", "Endokrinolog"
+    GASTROENTEROLOGIST = "gastroenterologist", "Gastroenterolog"
+    UROLOGIST = "urologist", "Urolog"
+    TRAUMATOLOGIST = "traumatologist", "Travmatolog-ortoped"
+    OTHER = "other", "Boshqa"
+
+
 class DoctorProfile(models.Model):
     """Shifokorning qabul sozlamalari: mutaxassislik, xona, ish vaqti, o'rtacha qabul davomiyligi."""
 
@@ -18,7 +38,7 @@ class DoctorProfile(models.Model):
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="doctor_profile",
         limit_choices_to={"role": "doctor"},
     )
-    specialty = models.CharField(max_length=100, blank=True, help_text="Masalan: Terapevt")
+    specialty = models.CharField(max_length=30, choices=Specialty.choices, blank=True)
     room = models.CharField(max_length=20, blank=True, help_text="Xona raqami")
     work_start = models.TimeField(default=time(9, 0))
     work_end = models.TimeField(default=time(17, 0))

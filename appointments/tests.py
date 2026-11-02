@@ -280,3 +280,85 @@ class AdminDoctorSpecialtyTests(QueueTestBase):
         self.client.force_authenticate(self.admin)
         self.assertEqual(self.client.patch(url, {"specialty": "ent"}, format="json").data["specialty"], "ent")
         self.assertEqual(self.client.patch(f"/api/queue/doctors/{self.pat_user.id}/profile/", {"specialty": "ent"}, format="json").status_code, 404)
+
+
+class AdminUserStatusTests(QueueTestBase):
+    def test_deactivate_and_reactivate(self):
+        self.client.force_authenticate(self.admin)
+        url = f"/api/auth/users/{self.pat2_user.id}/"
+        r = self.client.patch(url, {"is_active": False}, format="json")
+        self.assertEqual(r.status_code, 200)
+        self.assertFalse(r.data["is_active"])
+        self.client.force_authenticate(None)
+        login = self.client.post("/api/auth/login/", {"username": "pat2", "password": "x"}, format="json")
+        self.assertEqual(login.status_code, 401)
+        self.client.force_authenticate(self.admin)
+        self.assertTrue(self.client.patch(url, {"is_active": True}, format="json").data["is_active"])
+
+    def test_admin_cannot_deactivate_self(self):
+        self.client.force_authenticate(self.admin)
+        r = self.client.patch(f"/api/auth/users/{self.admin.id}/", {"is_active": False}, format="json")
+        self.assertEqual(r.status_code, 400)
+        self.admin.refresh_from_db()
+        self.assertTrue(self.admin.is_active)
+
+    def test_list_has_status(self):
+        self.client.force_authenticate(self.admin)
+        rows = self.client.get("/api/auth/users/").data
+        self.assertTrue(all("is_active" in u for u in rows))
+
+
+class ArrivalTests(QueueTestBase):
+    """Faqat shifoxonaga kelgan bemorlar navbatda turadi."""
+
+    def arrive(self, ticket_id, user=None):
+        self.client.force_authenticate(user or self.pat_user)
+        return self.client.post(f"/api/queue/tickets/{ticket_id}/arrive/")
+
+    def test_absent_online_patient_does_not_delay_walk_in(self):
+        self.set_time(8, 30)
+        online = self.take().data                      # №1, uyda
+        self.assertFalse(online["arrived"])
+        self.set_time(9, 0)
+        walk_in = self.registry("Ali").data            # №2, shifoxonada
+        self.assertEqual(walk_in["number"], 2)
+        self.assertEqual(walk_in["position"], 1)
+        self.assertEqual(walk_in["eta"], "2026-11-02T09:00+05:00")
+        self.client.force_authenticate(self.doctor)
+        called = self.client.post("/api/queue/doctor/next/").data["called"]
+        self.assertEqual(called["number"], 2)          # kelmagan №1 o'tkazib yuborildi
+
+    def test_arrived_online_patient_takes_place_by_number(self):
+        self.set_time(8, 30)
+        online = self.take().data                      # №1
+        self.set_time(9, 0)
+        self.registry("A")                             # №2
+        self.registry("B")                             # №3
+        self.client.force_authenticate(self.doctor)
+        self.client.post("/api/queue/doctor/next/")    # №2 qabulda
+        r = self.arrive(online["id"])
+        self.assertTrue(r.data["arrived"])
+        self.assertEqual(r.data["position"], 1)        # №3 dan oldin
+        self.client.force_authenticate(self.doctor)
+        self.assertEqual(self.client.post("/api/queue/doctor/next/").data["called"]["number"], 1)
+
+    def test_pending_online_not_counted_as_waiting(self):
+        self.take()
+        self.registry()
+        self.client.force_authenticate(self.pat2_user)
+        d = next(x for x in self.client.get("/api/queue/doctors/").data if x["id"] == self.doctor.id)
+        self.assertEqual((d["waiting"], d["pending_online"]), (1, 1))
+        self.assertEqual(d["next_eta_walkin"], "2026-11-02T10:15+05:00")
+        self.assertEqual(d["next_eta"], "2026-11-02T10:30+05:00")
+
+    def test_arrive_permissions(self):
+        t = self.take().data
+        self.assertEqual(self.arrive(t["id"], self.pat2_user).status_code, 404)
+        self.assertEqual(self.arrive(t["id"], self.doctor2).status_code, 404)
+        self.assertEqual(self.arrive(t["id"], self.admin).status_code, 200)
+        self.assertEqual(self.arrive(t["id"], self.doctor).status_code, 200)
+
+    def test_cannot_arrive_cancelled(self):
+        t = self.take().data
+        self.client.post(f"/api/queue/tickets/{t['id']}/cancel/")
+        self.assertEqual(self.arrive(t["id"]).status_code, 409)

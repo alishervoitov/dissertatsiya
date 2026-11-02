@@ -18,7 +18,7 @@ from .serializers import (
     TicketSerializer,
     doctor_name,
 )
-from .services import QueueError, call_next, finish_current, issue_ticket, queue_state, today
+from .services import QueueError, call_next, finish_current, issue_ticket, mark_arrived, queue_state, today
 
 
 def _active_profiles():
@@ -98,6 +98,29 @@ class CancelTicketView(APIView):
         ticket.status = QueueTicket.CANCELLED
         ticket.save(update_fields=["status"])
         return Response(_ticket_data(ticket))
+
+
+class ArriveView(APIView):
+    """Onlayn bemor shifoxonaga kelganini tasdiqlaydi. Bemorning o'zi, uning shifokori
+    yoki registratura (administrator) belgilashi mumkin; boshqalar uchun chipta ko'rinmaydi."""
+
+    def post(self, request, pk):
+        user = request.user
+        qs = QueueTicket.objects.select_related("doctor__doctor_profile")
+        if user.role == Role.PATIENT:
+            qs = qs.filter(patient__user=user)
+        elif user.role == Role.DOCTOR:
+            qs = qs.filter(doctor=user)
+        elif user.role != Role.ADMIN:
+            qs = qs.none()
+        ticket = get_object_or_404(qs, pk=pk)
+        try:
+            mark_arrived(ticket)
+        except QueueError as exc:
+            return _error(exc)
+        if user.role == Role.PATIENT:
+            return Response(_ticket_data(ticket))
+        return Response(_ticket_data(ticket, DoctorTicketSerializer))
 
 
 # ---------- Shifokor ----------

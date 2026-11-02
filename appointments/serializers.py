@@ -24,11 +24,15 @@ class DoctorQueueSerializer(serializers.Serializer):
             "room": p.room,
             "work_start": p.work_start.strftime("%H:%M"),
             "work_end": p.work_end.strftime("%H:%M"),
-            "waiting": len(state.waiting),
+            "waiting": len(state.present),
+            "pending_online": len(state.pending),
             "current_number": state.current.number if state.current else None,
             "avg_minutes": round(state.minutes),
             "next_eta": _local_iso(state.next_eta),
             "accepting": state.accepting,
+            # Shifoxonada (registratura, kiosk) chipta olayotgan bemor uchun: faqat kelganlar hisobga olinadi
+            "next_eta_walkin": _local_iso(state.next_eta_walkin),
+            "accepting_walkin": state.accepting_walkin,
         }
 
 
@@ -46,6 +50,7 @@ class TicketSerializer(serializers.Serializer):
             "date": ticket.date.isoformat(),
             "status": ticket.status,
             "source": ticket.source,
+            "arrived": ticket.arrived,
             "doctor": {
                 "id": ticket.doctor_id,
                 "name": doctor_name(ticket.doctor),
@@ -75,6 +80,7 @@ class DoctorTicketSerializer(serializers.Serializer):
             "number": ticket.number,
             "status": ticket.status,
             "source": ticket.source,
+            "arrived": ticket.arrived,
             "name": who,
             "patient_id": ticket.patient_id,
             "doctor_id": ticket.doctor_id,

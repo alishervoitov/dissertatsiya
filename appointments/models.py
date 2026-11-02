@@ -97,6 +97,9 @@ class QueueTicket(models.Model):
     )
 
     created_at = models.DateTimeField(auto_now_add=True)
+    # Bemor shifoxonaga kelgan vaqt. Jonli navbatda chipta olingan payt; onlayn navbatda bemor
+    # "Keldim" tugmasini bosgan yoki registratura belgilagan payt. Kelmaganlar navbatni ushlab turmaydi.
+    arrived_at = models.DateTimeField(null=True, blank=True)
     called_at = models.DateTimeField(null=True, blank=True)
     finished_at = models.DateTimeField(null=True, blank=True)
 
@@ -105,6 +108,10 @@ class QueueTicket(models.Model):
         constraints = [
             models.UniqueConstraint(fields=["doctor", "date", "number"], name="queue_ticket_unique_number"),
         ]
+
+    @property
+    def arrived(self):
+        return self.arrived_at is not None
 
     def __str__(self):
         return f"№{self.number} {self.date} ({self.get_status_display()})"

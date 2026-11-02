@@ -6,7 +6,7 @@ from users.permissions import IsAdmin, IsAdminOrDoctor
 
 from .audit import log_audit
 from .models import AuditLog, MedicalRecord, Patient
-from .permissions import MedicalRecordObjectPermission, PatientObjectPermission
+from .permissions import MedicalRecordObjectPermission, PatientObjectPermission, can_read_patient
 from .serializers import (
     AuditLogSerializer,
     MedicalRecordSerializer,
@@ -94,6 +94,8 @@ class MedicalRecordListCreateView(generics.ListCreateAPIView):
             pass  # shifokor davolash uchun barcha bemorlar yozuvlarini ko'ra oladi
         elif user.role == Role.ADMIN:
             pass  # administrator nazorat uchun ko'ra oladi (faqat o'qish)
+        else:
+            qs = qs.none()  # boshqa rollar (masalan, laborant) klinik yozuvlarni ko'rmaydi
 
         patient_id = self.request.query_params.get("patient")
         if patient_id:
@@ -218,9 +220,9 @@ class PatientHistoryPDFView(APIView):
         except Patient.DoesNotExist:
             return Response({"detail": "Bemor topilmadi."}, status=status.HTTP_404_NOT_FOUND)
 
-        # Ruxsat tekshiruvi: bemor faqat o'zinikini, shifokor/admin istalganini
+        # Ruxsat tekshiruvi: bemor faqat o'zinikini, shifokor/admin istalganini, boshqa rollar hech birini
         user = request.user
-        if user.role == Role.PATIENT and patient.user_id != user.id:
+        if not can_read_patient(user, patient):
             return Response({"detail": "Ruxsat berilmagan."}, status=status.HTTP_403_FORBIDDEN)
 
         records = MedicalRecord.objects.filter(patient=patient).select_related("created_by").order_by("-visit_date")
@@ -312,7 +314,7 @@ class AttachmentDownloadView(APIView):
 
         user = request.user
         record = attachment.record
-        if user.role == Role.PATIENT and record.patient.user_id != user.id:
+        if not can_read_patient(user, record.patient):
             return Response({"detail": "Ruxsat berilmagan."}, status=status.HTTP_403_FORBIDDEN)
 
         log_audit(
@@ -353,6 +355,8 @@ class PrescriptionListCreateView(generics.ListCreateAPIView):
 
         if user.role == Role.PATIENT:
             qs = qs.filter(patient__user=user)
+        elif user.role not in (Role.DOCTOR, Role.ADMIN):
+            qs = qs.none()
 
         patient_id = self.request.query_params.get("patient")
         if patient_id:

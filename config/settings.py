@@ -46,6 +46,7 @@ INSTALLED_APPS = [
     'users',
     'records',
     'appointments',
+    'labs',
     'django_celery_beat',
 ]
 

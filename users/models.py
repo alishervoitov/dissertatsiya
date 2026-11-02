@@ -7,6 +7,7 @@ class Role(models.TextChoices):
     ADMIN = "admin", "Administrator"
     DOCTOR = "doctor", "Shifokor"
     PATIENT = "patient", "Bemor"
+    LAB = "lab", "Laborant"
 
 
 class User(AbstractUser):
@@ -42,6 +43,10 @@ class User(AbstractUser):
     @property
     def is_doctor(self):
         return self.role == Role.DOCTOR
+
+    @property
+    def is_lab(self):
+        return self.role == Role.LAB
 
     @property
     def is_patient(self):

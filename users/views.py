@@ -145,9 +145,18 @@ class AdminUserListCreateView(generics.ListCreateAPIView):
 class AdminUserDetailView(generics.RetrieveUpdateDestroyAPIView):
     """Administrator uchun bitta foydalanuvchini boshqarish (faollashtirish/o'chirish)."""
 
-    queryset = User.objects.all()
-    serializer_class = UserPublicSerializer
+    queryset = User.objects.select_related("doctor_profile")
+    serializer_class = AdminUserListSerializer
     permission_classes = [IsAdmin]
+
+    def perform_update(self, serializer):
+        before = serializer.instance.is_active
+        user = serializer.save()
+        if before != user.is_active:
+            security_logger.info(
+                "Administrator %s hisobni %s: %s",
+                self.request.user.username, "faollashtirdi" if user.is_active else "faolsizlantirdi", user.username,
+            )
 
 from rest_framework.parsers import MultiPartParser, FormParser
 

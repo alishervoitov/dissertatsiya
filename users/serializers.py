@@ -203,7 +203,14 @@ class AdminUserListSerializer(UserPublicSerializer):
     room = serializers.SerializerMethodField()
 
     class Meta(UserPublicSerializer.Meta):
-        fields = UserPublicSerializer.Meta.fields + ["specialty", "room"]
+        fields = UserPublicSerializer.Meta.fields + ["is_active", "specialty", "room"]
+
+    def validate_is_active(self, value):
+        # Administrator o'z hisobini o'chirib qo'yib, tizimdan qulflanib qolmasin
+        request = self.context.get("request")
+        if not value and request and self.instance and self.instance.pk == request.user.pk:
+            raise serializers.ValidationError("O'z hisobingizni faolsizlantirib bo'lmaydi.")
+        return value
 
     def _profile(self, obj):
         return getattr(obj, "doctor_profile", None) if obj.role == Role.DOCTOR else None

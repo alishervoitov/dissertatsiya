@@ -2,6 +2,19 @@ from rest_framework.permissions import SAFE_METHODS, BasePermission
 
 from users.models import Role
 
+# Klinik ma'lumot (kasallik tarixi, retsept, fayllar) faqat shu rollarga ochiq. Yangi rol qo'shilganda
+# (masalan, laborant) u avtomatik ruxsat olmasligi uchun ro'yxat "ruxsat berilganlar" tamoyilida.
+CLINICAL_ROLES = (Role.PATIENT, Role.DOCTOR, Role.ADMIN)
+
+
+def can_read_patient(user, patient):
+    """Bemorning klinik ma'lumotini o'qish: bemorning o'zi, shifokor yoki administrator."""
+    if not user or not user.is_authenticated:
+        return False
+    if user.role == Role.PATIENT:
+        return patient.user_id == user.id
+    return user.role in (Role.DOCTOR, Role.ADMIN)
+
 
 class PatientObjectPermission(BasePermission):
     """
@@ -11,7 +24,7 @@ class PatientObjectPermission(BasePermission):
     """
 
     def has_permission(self, request, view):
-        return bool(request.user and request.user.is_authenticated)
+        return bool(request.user and request.user.is_authenticated and request.user.role in CLINICAL_ROLES)
 
     def has_object_permission(self, request, view, obj):
         user = request.user
@@ -34,6 +47,8 @@ class MedicalRecordObjectPermission(BasePermission):
 
     def has_permission(self, request, view):
         if not request.user or not request.user.is_authenticated:
+            return False
+        if request.user.role not in CLINICAL_ROLES:
             return False
         if request.method == "POST":
             return request.user.role == Role.DOCTOR
@@ -62,6 +77,8 @@ class PrescriptionObjectPermission(BasePermission):
 
     def has_permission(self, request, view):
         if not request.user or not request.user.is_authenticated:
+            return False
+        if request.user.role not in CLINICAL_ROLES:
             return False
         if request.method == "POST":
             return request.user.role == Role.DOCTOR

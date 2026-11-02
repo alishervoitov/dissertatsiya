@@ -1,0 +1,18 @@
+from django.urls import path
+
+from . import views
+
+urlpatterns = [
+    path("doctors/", views.DoctorListView.as_view(), name="queue-doctors"),
+    path("tickets/", views.TakeTicketView.as_view(), name="queue-take"),
+    path("tickets/my/", views.MyTicketsView.as_view(), name="queue-my"),
+    path("tickets/<int:pk>/cancel/", views.CancelTicketView.as_view(), name="queue-cancel"),
+    path("doctor/", views.DoctorQueueView.as_view(), name="queue-doctor"),
+    path("doctor/next/", views.DoctorCallNextView.as_view(), name="queue-doctor-next"),
+    path("doctor/finish/", views.DoctorFinishView.as_view(), name="queue-doctor-finish"),
+    path("doctor/tickets/<int:pk>/no-show/", views.DoctorNoShowView.as_view(), name="queue-doctor-noshow"),
+    path("doctor/settings/", views.DoctorSettingsView.as_view(), name="queue-doctor-settings"),
+    path("registry/", views.RegistryTicketView.as_view(), name="queue-registry"),
+    path("kiosk/doctors/", views.KioskDoctorListView.as_view(), name="queue-kiosk-doctors"),
+    path("kiosk/tickets/", views.KioskTicketView.as_view(), name="queue-kiosk-take"),
+]

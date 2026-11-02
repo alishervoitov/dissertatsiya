@@ -45,6 +45,7 @@ INSTALLED_APPS = [
     'corsheaders',
     'users',
     'records',
+    'appointments',
     'django_celery_beat',
 ]
 
@@ -152,6 +153,9 @@ REST_FRAMEWORK = {
         "logout": "20/min",
         "avatar": "10/hour",
         "password_reset_confirm": "10/hour",
+        # Navbat: bemor onlayn navbat oladi; kiosk shifoxonadagi bitta IP dan ishlaydi
+        "queue_take": "20/hour",
+        "kiosk": "300/hour",
     },
     "DEFAULT_RENDERER_CLASSES": (
         "rest_framework.renderers.JSONRenderer",
@@ -172,6 +176,9 @@ _DEV_CORS_ORIGINS = "http://localhost:3000,http://127.0.0.1:3000" if DEBUG else 
 CORS_ALLOWED_ORIGINS = [o for o in os.environ.get("CORS_ALLOWED_ORIGINS", _DEV_CORS_ORIGINS).split(",") if o]
 CORS_URLS_REGEX = r"^/api/.*$"  # admin, media, static uchun CORS yo'q
 CORS_ALLOW_CREDENTIALS = False
+# Kiosk ekrani o'z kalitini X-Kiosk-Key sarlavhasida yuboradi (dev rejimidagi CORS preflight uchun)
+from corsheaders.defaults import default_headers  # noqa: E402
+CORS_ALLOW_HEADERS = (*default_headers, "x-kiosk-key")
 
 
 # Email: SMTP faqat env'da EMAIL_HOST berilganda. Aks holda xat yuborilmaydi va matni (parol tiklash
@@ -278,3 +285,8 @@ if os.environ.get("USE_HTTPS", "0") == "1":
     SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True
+
+# Navbat: shifoxona vaqt zonasi (sana va taxminiy vaqt shu bo'yicha) va kiosk kaliti.
+# QUEUE_KIOSK_KEY bo'sh bo'lsa kiosk endpointlari yopiq.
+QUEUE_TIME_ZONE = os.environ.get("QUEUE_TIME_ZONE", "Asia/Tashkent")
+QUEUE_KIOSK_KEY = os.environ.get("QUEUE_KIOSK_KEY", "")

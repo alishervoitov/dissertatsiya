@@ -159,6 +159,7 @@ REST_FRAMEWORK = {
         # Navbat: bemor onlayn navbat oladi; kiosk shifoxonadagi bitta IP dan ishlaydi
         "queue_take": "20/hour",
         "kiosk": "300/hour",
+        "checkin": "30/hour",
     },
     "DEFAULT_RENDERER_CLASSES": (
         "rest_framework.renderers.JSONRenderer",
@@ -293,6 +294,10 @@ if os.environ.get("USE_HTTPS", "0") == "1":
 # QUEUE_KIOSK_KEY bo'sh bo'lsa kiosk endpointlari yopiq.
 QUEUE_TIME_ZONE = os.environ.get("QUEUE_TIME_ZONE", "Asia/Tashkent")
 QUEUE_KIOSK_KEY = os.environ.get("QUEUE_KIOSK_KEY", "")
+# Onlayn bemor "keldim"ni faqat shifoxonadagi QR kod orqali tasdiqlaydi (uydan bosib bo'lmaydi).
+QUEUE_CHECKIN_QR_REQUIRED = os.environ.get("QUEUE_CHECKIN_QR_REQUIRED", "1") == "1"
+# Kiosk ekranidagi QR kod necha soniyada almashadi (oldingi kod yana shuncha vaqt amal qiladi)
+QUEUE_CHECKIN_WINDOW = int(os.environ.get("QUEUE_CHECKIN_WINDOW", "45"))
 
 # Shubhali faollik qoidalari chegaralari (monitoring/detector.py). Bo'sh qoldirilsa standart qiymatlar.
 SECURITY_ALERTS = {}

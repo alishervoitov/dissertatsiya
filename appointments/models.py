@@ -98,7 +98,7 @@ class QueueTicket(models.Model):
 
     created_at = models.DateTimeField(auto_now_add=True)
     # Bemor shifoxonaga kelgan vaqt. Jonli navbatda chipta olingan payt; onlayn navbatda bemor
-    # "Keldim" tugmasini bosgan yoki registratura belgilagan payt. Kelmaganlar navbatni ushlab turmaydi.
+    # shifoxonadagi QR kodni skanerlagan yoki registratura belgilagan payt. Kelmaganlar navbatni ushlab turmaydi.
     arrived_at = models.DateTimeField(null=True, blank=True)
     called_at = models.DateTimeField(null=True, blank=True)
     finished_at = models.DateTimeField(null=True, blank=True)
@@ -115,3 +115,22 @@ class QueueTicket(models.Model):
 
     def __str__(self):
         return f"№{self.number} {self.date} ({self.get_status_display()})"
+
+
+class PrintedCheckinCode(models.Model):
+    """Zaxira: chop etib devorga ilinadigan QR kod. Faqat yaratilgan kuni va
+    bekor qilinmaguncha amal qiladi. Kiosk ekrani ishlamay qolganda ishlatiladi."""
+
+    date = models.DateField(unique=True)
+    code = models.CharField(max_length=64, unique=True)
+    active = models.BooleanField(default=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="+",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-date"]
+
+    def __str__(self):
+        return f"QR {self.date} ({'faol' if self.active else 'bekor'})"

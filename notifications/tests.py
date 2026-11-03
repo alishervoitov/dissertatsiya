@@ -54,6 +54,7 @@ class NotificationTests(APITestCase):
     def take(self, user):
         self.client.force_authenticate(user)
         t = self.client.post("/api/queue/tickets/", {"doctor": self.doctor.id}, format="json").data
+        self.client.force_authenticate(self.doctor)          # registratura/shifokor "keldi" deydi
         self.client.post(f"/api/queue/tickets/{t['id']}/arrive/")
         return t
 

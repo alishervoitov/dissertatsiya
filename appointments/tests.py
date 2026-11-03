@@ -338,9 +338,11 @@ class ArrivalTests(QueueTestBase):
         self.registry("B")                             # №3
         self.client.force_authenticate(self.doctor)
         self.client.post("/api/queue/doctor/next/")    # №2 qabulda
-        r = self.arrive(online["id"])
+        r = self.arrive(online["id"], self.admin)
         self.assertTrue(r.data["arrived"])
-        self.assertEqual(r.data["position"], 1)        # №3 dan oldin
+        self.client.force_authenticate(self.pat_user)
+        mine = self.client.get("/api/queue/tickets/my/").data
+        self.assertEqual(next(x for x in mine if x["id"] == online["id"])["position"], 1)  # №3 dan oldin
         self.client.force_authenticate(self.doctor)
         self.assertEqual(self.client.post("/api/queue/doctor/next/").data["called"]["number"], 1)
 
@@ -357,13 +359,15 @@ class ArrivalTests(QueueTestBase):
         t = self.take().data
         self.assertEqual(self.arrive(t["id"], self.pat2_user).status_code, 404)
         self.assertEqual(self.arrive(t["id"], self.doctor2).status_code, 404)
+        r = self.arrive(t["id"])                       # bemor uydan bosa olmaydi
+        self.assertEqual((r.status_code, r.data["code"]), (403, "qr_required"))
         self.assertEqual(self.arrive(t["id"], self.admin).status_code, 200)
         self.assertEqual(self.arrive(t["id"], self.doctor).status_code, 200)
 
     def test_cannot_arrive_cancelled(self):
         t = self.take().data
         self.client.post(f"/api/queue/tickets/{t['id']}/cancel/")
-        self.assertEqual(self.arrive(t["id"]).status_code, 409)
+        self.assertEqual(self.arrive(t["id"], self.admin).status_code, 409)
 
 
 class DoctorArrivalSignalTests(QueueTestBase):
@@ -379,9 +383,7 @@ class DoctorArrivalSignalTests(QueueTestBase):
         r = self.client.post("/api/queue/doctor/next/").data
         self.assertEqual((r["called"]["number"], r["skipped"]), (2, [1]))
         self.assertEqual(self.client.get("/api/queue/doctor/count/").data, {"present": 0, "pending": 1})
-        self.client.force_authenticate(self.pat_user)
-        self.client.post(f"/api/queue/tickets/{online['id']}/arrive/")
-        self.client.force_authenticate(self.doctor)
+        self.client.post(f"/api/queue/tickets/{online['id']}/arrive/")   # shifokor belgilaydi
         self.assertEqual(self.client.get("/api/queue/doctor/count/").data, {"present": 1, "pending": 0})
         row = next(x for x in self.client.get("/api/queue/doctor/").data["tickets"] if x["number"] == 1)
         self.assertEqual(row["arrived_at"], "2026-11-02T09:00+05:00")
@@ -390,3 +392,91 @@ class DoctorArrivalSignalTests(QueueTestBase):
     def test_count_only_for_doctor(self):
         self.client.force_authenticate(self.pat_user)
         self.assertEqual(self.client.get("/api/queue/doctor/count/").status_code, 403)
+
+
+@override_settings(QUEUE_KIOSK_KEY="kiosk-secret", QUEUE_CHECKIN_WINDOW=45, FRONTEND_URL="https://medsecure.uz")
+class QrCheckinTests(QueueTestBase):
+    """Bemor kelganini faqat shifoxonadagi QR kod orqali tasdiqlaydi."""
+
+    def kiosk_code(self, base=""):
+        self.client.force_authenticate(None)
+        r = self.client.get("/api/queue/kiosk/checkin-code/", {"base": base}, HTTP_X_KIOSK_KEY="kiosk-secret")
+        self.assertEqual(r.status_code, 200)
+        return r.data
+
+    def checkin(self, code, user=None):
+        self.client.force_authenticate(user or self.pat_user)
+        return self.client.post("/api/queue/checkin/", {"code": code}, format="json")
+
+    def code_of(self, data):
+        return data["url"].split("?c=")[1]
+
+    def test_kiosk_code_marks_all_today_tickets(self):
+        a = self.take().data
+        b = self.take(doctor=self.doctor2).data
+        data = self.kiosk_code("https://medsecure.uz")
+        self.assertTrue(data["url"].startswith("https://medsecure.uz/arrive?c=r."))
+        self.assertTrue(data["svg"].startswith("<svg"))
+        self.assertTrue(0 < data["expires_in"] <= 45)
+        r = self.checkin(self.code_of(data))
+        self.assertEqual((r.status_code, r.data["confirmed"]), (200, 2))
+        self.assertTrue(QueueTicket.objects.get(pk=a["id"]).arrived_at)
+        self.assertTrue(QueueTicket.objects.get(pk=b["id"]).arrived_at)
+        self.assertEqual(self.checkin(self.code_of(data)).data["confirmed"], 0)   # takror - zararsiz
+        self.assertTrue(AuditLog.objects.filter(actor=self.pat_user, detail__contains="QR orqali").exists())
+
+    def test_code_expires(self):
+        self.take()
+        with mock.patch("appointments.checkin.time.time", return_value=1_000_000.0):
+            code = self.code_of(self.kiosk_code())
+        with mock.patch("appointments.checkin.time.time", return_value=1_000_000.0 + 50):
+            self.assertEqual(self.checkin(code).status_code, 200)   # oldingi oyna hali amal qiladi
+        t2 = self.take(self.pat2_user).data
+        with mock.patch("appointments.checkin.time.time", return_value=1_000_000.0 + 100):
+            r = self.checkin(code, self.pat2_user)                   # uyga yuborilgan eski rasm
+        self.assertEqual((r.status_code, r.data["code"]), (400, "bad_code"))
+        self.assertIsNone(QueueTicket.objects.get(pk=t2["id"]).arrived_at)
+
+    def test_forged_and_foreign_codes_rejected(self):
+        self.take()
+        good = self.code_of(self.kiosk_code())
+        w = good.split(".")[1]
+        for bad in ["", "r.123.abc", f"r.{w}.{'0' * 20}", f"r.{int(w) + 5}.{good.split('.')[2]}", "p.nope", "x"]:
+            self.assertEqual(self.checkin(bad).status_code, 400, bad)
+
+    def test_no_ticket_and_roles(self):
+        code = self.code_of(self.kiosk_code())
+        self.assertEqual(self.checkin(code).data["code"], "no_ticket")
+        self.assertEqual(self.checkin(code, self.doctor).status_code, 403)
+        self.client.force_authenticate(None)
+        self.assertEqual(self.client.get("/api/queue/kiosk/checkin-code/").status_code, 403)   # kalitsiz
+
+    def test_qr_base_cannot_point_elsewhere(self):
+        self.assertTrue(self.kiosk_code("https://evil.example")["url"].startswith("https://medsecure.uz/arrive"))
+
+    def test_printed_code_lifecycle(self):
+        self.take()
+        self.client.force_authenticate(self.pat_user)
+        self.assertEqual(self.client.post("/api/queue/admin/printed-checkin/").status_code, 403)
+        self.client.force_authenticate(self.admin)
+        self.assertFalse(self.client.get("/api/queue/admin/printed-checkin/").data["active"])
+        first = self.code_of(self.client.post("/api/queue/admin/printed-checkin/").data)
+        second = self.code_of(self.client.post("/api/queue/admin/printed-checkin/").data)
+        self.assertNotEqual(first, second)
+        self.assertEqual(self.checkin(first).status_code, 400)       # qayta yaratilgach eskisi yaroqsiz
+        self.client.force_authenticate(self.admin)
+        self.client.delete("/api/queue/admin/printed-checkin/")
+        self.assertEqual(self.checkin(second).status_code, 400)      # bekor qilingan
+        self.client.force_authenticate(self.admin)
+        third = self.code_of(self.client.post("/api/queue/admin/printed-checkin/").data)
+        self.assertEqual(self.checkin(third).status_code, 200)
+        self.set_time(10, 0)
+        self.now.return_value = at(10, 0) + timedelta(days=1)       # ertasi kun
+        self.take()
+        self.assertEqual(self.checkin(third).status_code, 400)
+
+    @override_settings(QUEUE_CHECKIN_QR_REQUIRED=False)
+    def test_button_can_be_reenabled_by_setting(self):
+        t = self.take().data
+        self.client.force_authenticate(self.pat_user)
+        self.assertEqual(self.client.post(f"/api/queue/tickets/{t['id']}/arrive/").status_code, 200)

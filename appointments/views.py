@@ -1,3 +1,7 @@
+import logging
+import secrets
+
+from django.conf import settings
 from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.response import Response
@@ -8,7 +12,8 @@ from records.models import Patient
 from users.models import Role
 from users.permissions import IsAdmin, IsDoctor, IsPatient
 
-from .models import DoctorProfile, QueueTicket
+from . import checkin
+from .models import DoctorProfile, PrintedCheckinCode, QueueTicket
 from .permissions import HasKioskKey
 from .serializers import (
     DoctorProfileSerializer,
@@ -114,6 +119,11 @@ class ArriveView(APIView):
         elif user.role != Role.ADMIN:
             qs = qs.none()
         ticket = get_object_or_404(qs, pk=pk)
+        if user.role == Role.PATIENT and getattr(settings, "QUEUE_CHECKIN_QR_REQUIRED", True):
+            return Response(
+                {"detail": "Kelganingizni shifoxonadagi QR kodni skanerlab tasdiqlang.", "code": "qr_required"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         try:
             mark_arrived(ticket)
         except QueueError as exc:
@@ -281,3 +291,105 @@ class KioskTicketView(APIView):
         except QueueError as exc:
             return _error(exc)
         return Response(_ticket_data(ticket), status=status.HTTP_201_CREATED)
+
+
+# ---------- QR orqali kelganlikni tasdiqlash ----------
+
+security_logger = logging.getLogger("security")
+
+
+def _qr_payload(request, code, expires_in=None):
+    url = checkin.checkin_url(checkin.safe_base(request, request.query_params.get("base", "")), code)
+    data = {"url": url, "svg": checkin.qr_svg(url)}
+    if expires_in is not None:
+        data["expires_in"] = expires_in
+    return data
+
+
+class KioskCheckinCodeView(APIView):
+    """Kiosk ekrani uchun aylanuvchi QR kod (har ~45 soniyada yangilanadi)."""
+
+    authentication_classes = []
+    permission_classes = [HasKioskKey]
+    throttle_scope = "kiosk"
+
+    def get(self, request):
+        code, expires_in = checkin.rotating_code()
+        return Response(_qr_payload(request, code, expires_in))
+
+
+class AdminPrintedCheckinView(APIView):
+    """Zaxira QR: administrator bugungi kod yaratadi (chop etish uchun) yoki bekor qiladi."""
+
+    permission_classes = [IsAdmin]
+
+    def _response(self, request, obj):
+        if not obj or not obj.active:
+            return Response({"active": False, "date": str(today())})
+        return Response({"active": True, "date": str(obj.date), **_qr_payload(request, checkin.PRINTED_PREFIX + obj.code)})
+
+    def get(self, request):
+        return self._response(request, PrintedCheckinCode.objects.filter(date=today()).first())
+
+    def post(self, request):
+        # Har safar yangi kod: eski chop etilgan varaq darhol yaroqsiz bo'ladi
+        obj, _ = PrintedCheckinCode.objects.update_or_create(
+            date=today(), defaults={"code": secrets.token_urlsafe(16), "active": True, "created_by": request.user},
+        )
+        log_audit(request.user, "create", detail="Chop etiladigan QR kod (kelganlikni tasdiqlash) yaratildi")
+        return self._response(request, obj)
+
+    def delete(self, request):
+        PrintedCheckinCode.objects.filter(date=today()).update(active=False)
+        log_audit(request.user, "update", detail="Chop etiladigan QR kod bekor qilindi")
+        return Response({"active": False, "date": str(today())})
+
+
+def _code_is_valid(code):
+    if code.startswith(checkin.ROTATING_PREFIX):
+        return checkin.verify_rotating(code), "kiosk"
+    if code.startswith(checkin.PRINTED_PREFIX):
+        ok = PrintedCheckinCode.objects.filter(
+            date=today(), active=True, code=code[len(checkin.PRINTED_PREFIX):],
+        ).exists()
+        return ok, "printed"
+    return False, ""
+
+
+class CheckinView(APIView):
+    """Bemor shifoxonadagi QR kodni skanerlaydi: bugungi barcha kutilayotgan onlayn
+    navbatlari "keldi" deb belgilanadi."""
+
+    permission_classes = [IsPatient]
+    throttle_scope = "checkin"
+
+    def post(self, request):
+        code = str(request.data.get("code", "")).strip()[:100]
+        ok, kind = _code_is_valid(code)
+        if not ok:
+            security_logger.warning("Yaroqsiz QR kod bilan kelganlikni tasdiqlash: user=%s", request.user.pk)
+            return Response(
+                {"detail": "QR kod eskirgan yoki noto'g'ri. Shifoxonadagi ekrandan qayta skanerlang.", "code": "bad_code"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        patient = get_object_or_404(Patient, user=request.user)
+        tickets = list(QueueTicket.objects.filter(
+            patient=patient, date=today(), status__in=QueueTicket.ACTIVE,
+        ).select_related("doctor__doctor_profile").order_by("number"))
+        if not tickets:
+            return Response(
+                {"detail": "Bugun sizda faol navbat yo'q.", "code": "no_ticket"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        from notifications.services import notify_queue
+        newly = []
+        for t in tickets:
+            if t.status == QueueTicket.WAITING and not t.arrived_at:
+                mark_arrived(t)
+                newly.append(t)
+                notify_queue(t.doctor.doctor_profile)
+        if newly:
+            log_audit(request.user, "update", patient=patient,
+                      detail=f"Shifoxonaga kelish QR orqali tasdiqlandi ({kind}): "
+                             + ", ".join(f"№{t.number}" for t in newly))
+        return Response({"tickets": [_ticket_data(t) for t in tickets], "confirmed": len(newly)})

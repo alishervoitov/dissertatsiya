@@ -225,13 +225,17 @@ class PatientHistoryPDFView(APIView):
         if not can_read_patient(user, patient):
             return Response({"detail": "Ruxsat berilmagan."}, status=status.HTTP_403_FORBIDDEN)
 
-        records = MedicalRecord.objects.filter(patient=patient).select_related("created_by").order_by("-visit_date")
+        # Eski "laboratoriya natijasi" turidagi matnli yozuvlar o'rniga laborant kiritgan haqiqiy tahlillar beriladi
+        records = (MedicalRecord.objects.filter(patient=patient).exclude(record_type="lab_result")
+                   .select_related("created_by").order_by("-visit_date"))
+        from labs.services import latest_valid_results
+        lab_results = latest_valid_results(patient)
 
         lang = request.query_params.get("lang", "uz")
         if lang not in ("uz", "ru", "en"):
             lang = "uz"
 
-        pdf_buffer = build_patient_history_pdf(patient, records, lang=lang)
+        pdf_buffer = build_patient_history_pdf(patient, records, lang=lang, lab_results=lab_results)
 
         log_audit(
             user, "export", patient=patient,

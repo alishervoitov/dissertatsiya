@@ -189,3 +189,70 @@ class LabRoleIsolationTests(LabBase):
     def test_not_a_doctor_for_queue(self):
         self.assertEqual(self.client.get("/api/queue/doctor/").status_code, 403)
         self.assertEqual(self.client.get("/api/queue/registry/").status_code, 403)
+
+
+class ValidityAndPdfTests(LabBase):
+    def make(self, panel, title, days_ago, valid_days=None):
+        from datetime import timedelta
+        collected = timezone.now() - timedelta(days=days_ago)
+        r = LabResult.objects.create(
+            patient=self.patient, panel=panel, title=title, collected_at=collected, created_by=self.lab,
+            valid_until=(collected.date() + timedelta(days=valid_days)) if valid_days is not None else None,
+        )
+        LabValue.objects.create(result=r, name="Gemoglobin", value="112", unit="g/l", ref_low=130, ref_high=160)
+        return r
+
+    def test_default_validity_set_on_create(self):
+        r = self.create(panel="urine")
+        from datetime import date
+        collected = date.fromisoformat(r.data["collected_at"][:10])
+        self.assertEqual((date.fromisoformat(r.data["valid_until"]) - collected).days, 10)
+        self.assertFalse(r.data["is_expired"])
+
+    def test_valid_until_before_collection_rejected(self):
+        r = self.create(valid_until="2000-01-01")
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("valid_until", r.data)
+
+    def test_latest_per_type_and_expiry(self):
+        from .services import latest_valid_results
+        self.make("cbc", "Qon 1", days_ago=6, valid_days=10)
+        cbc_new = self.make("cbc", "Qon 2", days_ago=1, valid_days=10)
+        self.make("urine", "Siydik", days_ago=20, valid_days=10)          # muddati o'tgan
+        hormone = self.make("custom", "Gormonlar", days_ago=2, valid_days=30)
+        self.make("custom", "Vitamin D", days_ago=3, valid_days=30)
+        got = {r.title for r in latest_valid_results(self.patient)}
+        self.assertEqual(got, {"Qon 2", "Gormonlar", "Vitamin D"})
+        self.assertIn(cbc_new.title, got)
+
+    def test_expired_latest_does_not_fall_back_to_older(self):
+        from .services import latest_valid_results
+        self.make("biochem", "Eski", days_ago=40, valid_days=60)
+        self.make("biochem", "Yangi", days_ago=20, valid_days=14)        # eng oxirgisi, lekin muddati o'tgan
+        self.assertEqual(latest_valid_results(self.patient), [])
+
+    def test_pdf_includes_valid_labs_and_skips_old_lab_records(self):
+        from unittest import mock
+        self.make("cbc", "Qon 2", days_ago=1, valid_days=10)
+        self.make("urine", "Siydik", days_ago=20, valid_days=10)
+        MedicalRecord.objects.create(patient=self.patient, created_by=self.doctor, record_type="lab_result",
+                                     title="Qon tahlili", visit_date=timezone.now())
+        MedicalRecord.objects.create(patient=self.patient, created_by=self.doctor, record_type="visit",
+                                     title="Tashrif", visit_date=timezone.now())
+        self.client.force_authenticate(self.pat_user)
+        from records import views as rv
+        with mock.patch.object(rv, "build_patient_history_pdf", wraps=rv.build_patient_history_pdf) as spy:
+            r = self.client.get(f"/api/records/patients/{self.patient.id}/history-pdf/")
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(b"".join(r.streaming_content).startswith(b"%PDF"))
+        args, kwargs = spy.call_args
+        self.assertEqual([x.title for x in args[1]], ["Tashrif"])
+        self.assertEqual([x.title for x in kwargs["lab_results"]], ["Qon 2"])
+
+    def test_pdf_renders_in_all_languages(self):
+        self.make("cbc", "<b>Qon & 2", days_ago=1, valid_days=10)
+        self.client.force_authenticate(self.pat_user)
+        for lang in ("uz", "ru", "en"):
+            r = self.client.get(f"/api/records/patients/{self.patient.id}/history-pdf/?lang={lang}")
+            self.assertEqual(r.status_code, 200)
+            self.assertTrue(b"".join(r.streaming_content).startswith(b"%PDF"))

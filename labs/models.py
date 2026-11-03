@@ -4,6 +4,7 @@ Natijani laborant kiritadi; bemor o'z kabinetida, shifokor bemor sahifasida ko'r
 Ko'rsatkich qiymatlari va izohlar bazada shifrlangan holda saqlanadi.
 """
 import uuid
+from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 
 from django.conf import settings
@@ -23,6 +24,15 @@ def lab_upload_path(instance, filename):
     return f"lab/{instance.result.patient_id}/{uuid.uuid4().hex}.{ext}"
 
 
+# Tahlil natijasi necha kun amal qiladi (standart). Laborant har bir natija uchun o'zgartira oladi.
+DEFAULT_VALIDITY_DAYS = {"cbc": 10, "urine": 10, "biochem": 14, "custom": 30}
+
+
+def default_valid_until(panel, collected_at):
+    days = getattr(settings, "LAB_VALIDITY_DAYS", DEFAULT_VALIDITY_DAYS).get(panel, DEFAULT_VALIDITY_DAYS["custom"])
+    return collected_at.date() + timedelta(days=days)
+
+
 class LabResult(models.Model):
     PANELS = [
         ("cbc", "Umumiy qon tahlili"),
@@ -35,6 +45,7 @@ class LabResult(models.Model):
     panel = models.CharField(max_length=20, choices=PANELS, default="custom")
     title = models.CharField(max_length=200)
     collected_at = models.DateTimeField(help_text="Namuna olingan vaqt")
+    valid_until = models.DateField(null=True, blank=True, help_text="Shu sanagacha amal qiladi (PDF'ga faqat amaldagilar chiqadi)")
     notes = EncryptedTextField(blank=True, help_text="Laborant izohi")
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="entered_lab_results",
@@ -44,6 +55,9 @@ class LabResult(models.Model):
 
     class Meta:
         ordering = ["-collected_at", "-id"]
+
+    def is_expired(self, today):
+        return self.valid_until is not None and self.valid_until < today
 
     def __str__(self):
         return f"{self.title} ({self.collected_at:%Y-%m-%d})"

@@ -6,7 +6,7 @@ from rest_framework import serializers
 
 from records.models import Patient
 
-from .models import LabAttachment, LabResult, LabValue
+from .models import LabAttachment, LabResult, LabValue, default_valid_until
 
 MAX_VALUES = 60
 
@@ -39,12 +39,13 @@ class LabResultSerializer(serializers.ModelSerializer):
     created_by_name = serializers.SerializerMethodField()
     patient_name = serializers.SerializerMethodField()
     abnormal_count = serializers.SerializerMethodField()
+    is_expired = serializers.SerializerMethodField()
     patient = serializers.PrimaryKeyRelatedField(queryset=Patient.objects.all())
 
     class Meta:
         model = LabResult
         fields = [
-            "id", "patient", "patient_name", "panel", "title", "collected_at", "notes",
+            "id", "patient", "patient_name", "panel", "title", "collected_at", "valid_until", "is_expired", "notes",
             "values", "attachments", "abnormal_count", "created_by_name", "created_at", "updated_at",
         ]
         read_only_fields = ["id", "created_at", "updated_at"]
@@ -55,6 +56,10 @@ class LabResultSerializer(serializers.ModelSerializer):
     def get_patient_name(self, obj):
         u = obj.patient.user
         return u.get_full_name() or u.username
+
+    def get_is_expired(self, obj):
+        from .services import local_today
+        return obj.is_expired(local_today())
 
     def get_abnormal_count(self, obj):
         return sum(1 for v in obj.values.all() if v.flag in ("low", "high", "abnormal"))
@@ -75,6 +80,10 @@ class LabResultSerializer(serializers.ModelSerializer):
         # Tahrirlashda natijani boshqa bemorga ko'chirib bo'lmaydi
         if self.instance and "patient" in attrs and attrs["patient"].pk != self.instance.patient_id:
             raise serializers.ValidationError({"patient": "Natijani boshqa bemorga o'tkazib bo'lmaydi."})
+        collected = attrs.get("collected_at", getattr(self.instance, "collected_at", None))
+        valid_until = attrs.get("valid_until")
+        if valid_until and collected and valid_until < collected.date():
+            raise serializers.ValidationError({"valid_until": "Amal qilish muddati namuna olingan kundan oldin bo'lishi mumkin emas."})
         return attrs
 
     def _save_values(self, result, values):
@@ -84,6 +93,8 @@ class LabResultSerializer(serializers.ModelSerializer):
     @transaction.atomic
     def create(self, validated_data):
         values = validated_data.pop("values")
+        if not validated_data.get("valid_until"):
+            validated_data["valid_until"] = default_valid_until(validated_data.get("panel", "custom"), validated_data["collected_at"])
         result = LabResult.objects.create(**validated_data)
         self._save_values(result, values)
         return result

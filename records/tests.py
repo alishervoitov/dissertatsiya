@@ -394,3 +394,69 @@ class AuditRekeyTests(TestCase):
         with override_settings(AUDIT_HMAC_KEY="d" * 64):
             with self.assertRaises(CommandError):
                 call_command("rekey_audit_chain", "--from-secret-key")
+
+
+class EncryptionKeyRotationTests(TestCase):
+    """Fernet kalitini almashtirish: eski ma'lumot yo'qolmaydi, eski kalit keyin olib tashlanadi."""
+
+    OLD = Fernet.generate_key().decode()
+    NEW = Fernet.generate_key().decode()
+
+    def raw(self, table, col, pk):
+        from django.db import connection
+        with connection.cursor() as c:
+            c.execute(f"SELECT {col} FROM {table} WHERE id = %s", [pk])
+            return c.fetchone()[0]
+
+    def run_cmd(self, *args):
+        from io import StringIO
+        from django.core.management import call_command
+        out = StringIO()
+        call_command("rotate_encryption_key", *args, stdout=out)
+        return out.getvalue()
+
+    def test_full_rotation_cycle(self):
+        with override_settings(FIELD_ENCRYPTION_KEY=self.OLD):
+            u = User.objects.create_user(username="rot_pat", password="x", role=Role.PATIENT)
+            p = Patient.objects.get(user=u)
+            p.allergies, p.national_id = "Penitsillin", "AA1234567"
+            p.save()
+            doc = User.objects.create_user(username="rot_doc", password="x", role=Role.DOCTOR)
+            rec = MedicalRecord.objects.create(patient=p, created_by=doc, title="Ko'rik", visit_date=timezone.now().date(), diagnosis="Gripp", treatment="Dam olish")
+
+        with override_settings(FIELD_ENCRYPTION_KEY=f"{self.NEW},{self.OLD}"):
+            self.assertEqual(Patient.objects.get(pk=p.pk).allergies, "Penitsillin")   # eski kalit bilan o'qiladi
+            out = self.run_cmd("--check")
+            self.assertIn("eski kalit #1:         4 ta", out)
+            self.run_cmd()
+            self.assertIn("eski kalit #1:         0 ta", self.run_cmd("--check"))
+
+        # Eski kalit olib tashlangach ham hammasi o'qiladi
+        with override_settings(FIELD_ENCRYPTION_KEY=self.NEW):
+            p2 = Patient.objects.get(pk=p.pk)
+            self.assertEqual((p2.allergies, p2.national_id), ("Penitsillin", "AA1234567"))
+            r2 = MedicalRecord.objects.get(pk=rec.pk)
+            self.assertEqual((r2.diagnosis, r2.treatment), ("Gripp", "Dam olish"))
+        Fernet(self.NEW.encode()).decrypt(self.raw("records_patient", "allergies", p.pk).encode())
+        with self.assertRaises(Exception):
+            Fernet(self.OLD.encode()).decrypt(self.raw("records_patient", "allergies", p.pk).encode())
+
+    def test_refuses_when_value_cannot_be_decrypted(self):
+        from django.core.management.base import CommandError
+        lost = Fernet.generate_key().decode()
+        with override_settings(FIELD_ENCRYPTION_KEY=lost):
+            u = User.objects.create_user(username="rot_lost", password="x", role=Role.PATIENT)
+            p = Patient.objects.get(user=u)
+            p.allergies = "Yong'oq"
+            p.save()
+        with override_settings(FIELD_ENCRYPTION_KEY=f"{self.NEW},{self.OLD}"):
+            with self.assertRaises(CommandError):
+                self.run_cmd()
+        with override_settings(FIELD_ENCRYPTION_KEY=lost):                         # ma'lumot buzilmagan
+            self.assertEqual(Patient.objects.get(pk=p.pk).allergies, "Yong'oq")
+
+    def test_bad_key_format(self):
+        from django.core.management.base import CommandError
+        with override_settings(FIELD_ENCRYPTION_KEY=f"{self.NEW},notakey"):
+            with self.assertRaises(CommandError):
+                self.run_cmd("--check")

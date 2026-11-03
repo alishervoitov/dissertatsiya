@@ -15,7 +15,9 @@ from django.db import models
 from cryptography.fernet import Fernet, InvalidToken, MultiFernet
 
 
-def _get_fernet():
+def key_list():
+    """FIELD_ENCRYPTION_KEY="YANGI,ESKI,..." - birinchisi asosiy (shifrlash shu bilan),
+    qolganlari faqat o'qish uchun. Kalit almashtirish: qarang rotate_encryption_key buyrug'i."""
     key = settings.FIELD_ENCRYPTION_KEY
     if not key:
         raise RuntimeError(
@@ -23,8 +25,25 @@ def _get_fernet():
             "python -c \"from cryptography.fernet import Fernet; "
             "print(Fernet.generate_key().decode())\""
         )
-    keys = [k.strip() for k in key.split(",") if k.strip()]
-    return MultiFernet([Fernet(k.encode()) for k in keys])
+    return [k.strip() for k in key.split(",") if k.strip()]
+
+
+def _get_fernet():
+    return MultiFernet([Fernet(k.encode()) for k in key_list()])
+
+
+def encrypted_fields():
+    """Loyihadagi barcha shifrlangan maydonlar: [(model, [maydonlar])]."""
+    from django.apps import apps
+
+    result = []
+    for model in apps.get_models():
+        if model._meta.proxy or not model._meta.managed:
+            continue
+        fields = [f for f in model._meta.concrete_fields if isinstance(f, (EncryptedTextField, EncryptedCharField))]
+        if fields:
+            result.append((model, fields))
+    return result
 
 
 class EncryptedTextField(models.TextField):

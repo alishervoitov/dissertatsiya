@@ -48,6 +48,7 @@ INSTALLED_APPS = [
     'appointments',
     'labs',
     'monitoring',
+    'notifications',
     'django_celery_beat',
 ]
 

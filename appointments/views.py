@@ -147,6 +147,8 @@ class DoctorCallNextView(APIView):
     def post(self, request):
         profile = DoctorProfile.objects.get_or_create(user=request.user)[0]
         ticket = call_next(profile)
+        from notifications.services import notify_queue
+        notify_queue(profile)
         return Response({"called": DoctorTicketSerializer((ticket, None)).data if ticket else None})
 
 
@@ -166,6 +168,8 @@ class DoctorNoShowView(APIView):
                                    status__in=QueueTicket.ACTIVE)
         ticket.status = QueueTicket.NO_SHOW
         ticket.save(update_fields=["status"])
+        from notifications.services import notify_queue
+        notify_queue(ticket.doctor.doctor_profile)
         return Response({"id": ticket.id, "status": ticket.status})
 
 

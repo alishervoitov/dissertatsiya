@@ -72,7 +72,10 @@ class LabResultListCreateView(APIView):
         s.is_valid(raise_exception=True)
         result = s.save(created_by=request.user)
         log_audit(request.user, "create", patient=result.patient, detail=f"Tahlil natijasi kiritildi: {result.title}")
-        return Response(LabResultSerializer(_results_qs().get(pk=result.pk)).data, status=status.HTTP_201_CREATED)
+        result = _results_qs().get(pk=result.pk)
+        from notifications.services import notify_lab_ready
+        notify_lab_ready(result)
+        return Response(LabResultSerializer(result).data, status=status.HTTP_201_CREATED)
 
 
 class LabResultDetailView(APIView):

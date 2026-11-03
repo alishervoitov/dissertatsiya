@@ -117,9 +117,12 @@ def revoke_refresh_tokens(user):
     active = OutstandingToken.objects.filter(
         user=user, expires_at__gt=timezone.now(), blacklistedtoken__isnull=True
     )
+    active = list(active)
     created = BlacklistedToken.objects.bulk_create(
         [BlacklistedToken(token=token) for token in active], ignore_conflicts=True
     )
+    from .sessions import mark_revoked_jtis
+    mark_revoked_jtis(t.jti for t in active)   # qo'ldagi access tokenlar ham darhol yaroqsiz
     return len(created)
 
 

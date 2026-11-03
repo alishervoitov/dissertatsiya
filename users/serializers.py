@@ -151,6 +151,8 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
         token = super().get_token(user)
         token["role"] = user.role
         token["full_name"] = user.get_full_name() or user.username
+        # Sessiya identifikatori: access tokenlarga ham ko'chadi, shu bilan joriy qurilma aniqlanadi
+        token["sid"] = token["jti"]
         return token
 
     def validate(self, attrs):

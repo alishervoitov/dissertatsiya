@@ -27,7 +27,7 @@ from rest_framework.test import APITestCase
 from rest_framework.throttling import ScopedRateThrottle
 
 from .avatar import _normalize_mode
-from .models import User
+from .models import LoginSession, User
 from .models import Role
 from .security import MAX_FAILED_ATTEMPTS, REGISTER_TAKEN_LIMIT, is_reserved_username
 from .serializers import LOGIN_FAILED_MESSAGE, USERNAME_RESERVED_MESSAGE, USERNAME_TAKEN_MESSAGE
@@ -820,3 +820,114 @@ class CorsPolicyTests(APITestCase):
         response = self.client.post("/api/auth/login/", {"username": "corsuser", "password": STRONG_PASSWORD},
                                     format="json", HTTP_ORIGIN="https://medsecure.uz")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+
+class ActiveSessionTests(APITestCase):
+    """Faol sessiyalar: qurilmalar ro'yxati, bittasini yoki boshqalarini yopish."""
+
+    PHONE = "Mozilla/5.0 (Linux; Android 14; SM-A546E) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Mobile Safari/537.36"
+    PC = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36 Edg/130.0"
+
+    def setUp(self):
+        from django.core.cache import cache
+        cache.clear()
+        self.user = User.objects.create_user(username="sess", password="Pw8$kRt3!mZq5y", role="patient")
+        self.other = User.objects.create_user(username="sess2", password="Pw8$kRt3!mZq5y", role="doctor")
+
+    def login(self, ua, user="sess", ip="10.0.0.1"):
+        self.client.credentials()
+        r = self.client.post("/api/auth/login/", {"username": user, "password": "Pw8$kRt3!mZq5y"},
+                             format="json", HTTP_USER_AGENT=ua, REMOTE_ADDR=ip)
+        self.assertEqual(r.status_code, 200)
+        return r.data
+
+    def as_(self, tokens):
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {tokens['access']}")
+
+    def test_list_marks_current_and_device(self):
+        phone = self.login(self.PHONE, ip="10.0.0.5")
+        pc = self.login(self.PC)
+        self.login(self.PC, user="sess2")                 # boshqa foydalanuvchi ko'rinmaydi
+        self.as_(pc)
+        data = self.client.get("/api/auth/sessions/").data
+        self.assertEqual(len(data["results"]), 2)
+        cur = data["results"][0]
+        self.assertTrue(cur["current"])
+        self.assertEqual(cur["device"], {"browser": "Edge", "os": "Windows", "kind": "desktop"})
+        other = data["results"][1]
+        self.assertEqual((other["device"]["os"], other["device"]["kind"], other["ip"]), ("Android", "mobile", "10.0.0.5"))
+        self.assertNotIn("jti", other)
+        self.assertIsNotNone(phone)
+
+    def test_revoke_one_kills_refresh_and_access_immediately(self):
+        phone = self.login(self.PHONE)
+        pc = self.login(self.PC)
+        self.as_(pc)
+        phone_row = next(x for x in self.client.get("/api/auth/sessions/").data["results"] if not x["current"])
+        self.assertEqual(self.client.post(f"/api/auth/sessions/{phone_row['id']}/revoke/").data["revoked"], 1)
+        # telefonning access tokeni 15 daqiqa kutmasdan rad etiladi
+        self.as_(phone)
+        self.assertEqual(self.client.get("/api/auth/me/").status_code, 401)
+        self.client.credentials()
+        r = self.client.post("/api/auth/login/refresh/", {"refresh": phone["refresh"]}, format="json")
+        self.assertEqual(r.status_code, 401)
+        # kompyuter ishlashda davom etadi
+        self.as_(pc)
+        self.assertEqual(self.client.get("/api/auth/me/").status_code, 200)
+        self.assertEqual(len(self.client.get("/api/auth/sessions/").data["results"]), 1)
+
+    def test_cannot_revoke_someone_elses_session(self):
+        self.login(self.PC, user="sess2")
+        foreign = LoginSession.objects.get(user=self.other)
+        self.as_(self.login(self.PC))
+        self.assertEqual(self.client.post(f"/api/auth/sessions/{foreign.id}/revoke/").status_code, 404)
+        self.assertIsNone(LoginSession.objects.get(pk=foreign.pk).revoked_at)
+
+    def test_revoke_others_keeps_current(self):
+        a, b = self.login(self.PHONE), self.login(self.PHONE)
+        cur = self.login(self.PC)
+        self.as_(cur)
+        self.assertEqual(self.client.post("/api/auth/sessions/revoke-others/", {}, format="json").data["revoked"], 2)
+        self.assertEqual(self.client.get("/api/auth/me/").status_code, 200)
+        for t in (a, b):
+            self.as_(t)
+            self.assertEqual(self.client.get("/api/auth/me/").status_code, 401)
+
+    def test_revoke_all_including_current(self):
+        cur = self.login(self.PC)
+        self.login(self.PHONE)
+        self.as_(cur)
+        self.client.post("/api/auth/sessions/revoke-others/", {"include_current": True}, format="json")
+        self.assertEqual(self.client.get("/api/auth/me/").status_code, 401)
+        self.assertEqual(LoginSession.objects.filter(user=self.user, revoked_at__isnull=True).count(), 0)
+
+    def test_logout_and_refresh_update_session(self):
+        t = self.login(self.PC)
+        s = LoginSession.objects.get(user=self.user)
+        self.client.credentials()
+        r = self.client.post("/api/auth/login/refresh/", {"refresh": t["refresh"]}, format="json", REMOTE_ADDR="10.9.9.9")
+        self.assertEqual(r.status_code, 200)
+        s.refresh_from_db()
+        self.assertEqual(s.ip, "10.9.9.9")
+        self.client.post("/api/auth/logout/", {"refresh": t["refresh"]}, format="json")
+        s.refresh_from_db()
+        self.assertIsNotNone(s.revoked_at)
+        self.as_({"access": r.data["access"]})               # yangilangan access ham yopiladi
+        self.assertEqual(self.client.get("/api/auth/me/").status_code, 401)
+
+    def test_old_token_without_session_is_adopted_on_refresh(self):
+        from rest_framework_simplejwt.tokens import RefreshToken
+        old = RefreshToken.for_user(self.user)              # joylashtirishdan oldingi token (sid yo'q)
+        self.client.post("/api/auth/login/refresh/", {"refresh": str(old)}, format="json", HTTP_USER_AGENT=self.PHONE)
+        self.assertTrue(LoginSession.objects.filter(jti=old["jti"]).exists())
+
+    def test_password_reset_closes_sessions(self):
+        from .security import revoke_refresh_tokens
+        t = self.login(self.PC)
+        revoke_refresh_tokens(self.user)
+        self.as_(t)
+        self.assertEqual(self.client.get("/api/auth/me/").status_code, 401)
+        self.assertIsNotNone(LoginSession.objects.get(user=self.user).revoked_at)
+
+    def test_requires_auth(self):
+        self.assertEqual(self.client.get("/api/auth/sessions/").status_code, 401)

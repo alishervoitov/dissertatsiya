@@ -56,3 +56,23 @@ class User(AbstractUser):
     def is_locked(self):
         from django.utils import timezone
         return bool(self.locked_until and self.locked_until > timezone.now())
+
+class LoginSession(models.Model):
+    """Bitta kirish = bitta refresh token (jti). Foydalanuvchi qaysi qurilmalardan
+    kirganini ko'radi va istalgan sessiyani yopa oladi."""
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="login_sessions")
+    jti = models.CharField(max_length=255, unique=True)
+    ip = models.GenericIPAddressField(null=True, blank=True)
+    user_agent = models.CharField(max_length=300, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    last_seen = models.DateTimeField()
+    expires_at = models.DateTimeField()
+    revoked_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-last_seen"]
+        indexes = [models.Index(fields=["user", "revoked_at"])]
+
+    def __str__(self):
+        return f"{self.user} {self.ip} ({'yopilgan' if self.revoked_at else 'faol'})"

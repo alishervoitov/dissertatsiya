@@ -6,9 +6,10 @@ from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
-from rest_framework_simplejwt.views import TokenObtainPairView
+from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from .avatar import AvatarError, delete_old_avatar, process_avatar
-from .models import User
+from . import sessions
+from .models import LoginSession, User
 from .permissions import IsAdmin
 from .security import client_ident, record_register_taken, register_taken_exceeded, revoke_refresh_tokens
 from .tasks import request_password_reset
@@ -81,6 +82,11 @@ class LoginView(TokenObtainPairView):
                 client_ident(request),
             )
             raise
+        try:
+            refresh = RefreshToken(response.data["refresh"])
+            sessions.start_session(request, User.objects.get(pk=refresh["user_id"]), refresh)
+        except Exception:  # sessiya yozuvi kirishni to'xtatmasin
+            security_logger.exception("Login sessiyasini yozib bo'lmadi")
         security_logger.info(
             "Muvaffaqiyatli kirish: %r (IP: %s)",
             request.data.get("username"),
@@ -103,6 +109,7 @@ class LogoutView(APIView):
         try:
             token = RefreshToken(request.data["refresh"])
             token.blacklist()
+            sessions.mark_revoked_jtis([token["jti"]])
         except (KeyError, TypeError, TokenError):
             return Response({"detail": "Yaroqsiz token."}, status=status.HTTP_400_BAD_REQUEST)
         security_logger.info(
@@ -271,3 +278,76 @@ class PasswordResetConfirmView(APIView):
 
         security_logger.info("Parol muvaffaqiyatli tiklandi: %s (%s ta sessiya yopildi)", user.username, revoked)
         return Response({"detail": "Parol muvaffaqiyatli yangilandi."})
+
+class SessionRefreshView(TokenRefreshView):
+    """Access tokenni yangilaydi va sessiyaning oxirgi faollik vaqtini belgilaydi."""
+
+    def post(self, request, *args, **kwargs):
+        response = super().post(request, *args, **kwargs)
+        try:
+            sessions.touch_session(request, RefreshToken(request.data["refresh"]))
+        except Exception:
+            security_logger.exception("Sessiya faolligini yangilab bo'lmadi")
+        return response
+
+
+def _session_data(s, current_sid):
+    return {
+        "id": s.id,
+        "device": sessions.describe_device(s.user_agent),
+        "ip": s.ip,
+        "created_at": s.created_at,
+        "last_seen": s.last_seen,
+        "current": s.jti == current_sid,
+    }
+
+
+class SessionListView(APIView):
+    """Foydalanuvchining faol sessiyalari (qurilmalari). Joriy qurilma belgilanadi."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        sid = request.auth.get(sessions.SID_CLAIM) if request.auth else None
+        rows = [_session_data(s, sid) for s in sessions.active_sessions(request.user)]
+        rows.sort(key=lambda r: not r["current"])     # joriy qurilma birinchi
+        return Response({"results": rows, "current_known": bool(sid)})
+
+
+class SessionRevokeView(APIView):
+    """Bitta sessiyani yopish (boshqa qurilmadan chiqarish)."""
+
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "sessions"
+
+    def post(self, request, pk):
+        session = sessions.active_sessions(request.user).filter(pk=pk).first()
+        if not session:
+            return Response({"detail": "Sessiya topilmadi."}, status=status.HTTP_404_NOT_FOUND)
+        sessions.revoke([session])
+        security_logger.info("Sessiya yopildi: user_id=%s session=%s (IP: %s)",
+                             request.user.pk, session.pk, client_ident(request))
+        return Response({"revoked": 1})
+
+
+class SessionRevokeOthersView(APIView):
+    """Joriy qurilmadan tashqari barcha qurilmalardan chiqish.
+    include_current=true bo'lsa joriy sessiya ham yopiladi."""
+
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "sessions"
+
+    def post(self, request):
+        sid = request.auth.get(sessions.SID_CLAIM) if request.auth else None
+        qs = sessions.active_sessions(request.user)
+        if not request.data.get("include_current"):
+            qs = qs.exclude(jti=sid or "")
+        count = sessions.revoke(qs)
+        if request.data.get("include_current"):
+            # Joylashtirishdan oldingi (sessiyasiz) tokenlar ham yopilsin
+            count += revoke_refresh_tokens(request.user)
+        security_logger.info("Boshqa qurilmalardan chiqildi: user_id=%s, %s ta sessiya (IP: %s)",
+                             request.user.pk, count, client_ident(request))
+        return Response({"revoked": count})

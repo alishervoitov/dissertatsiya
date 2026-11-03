@@ -142,7 +142,8 @@ AVATAR_MAX_BYTES = 2_000_000
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
-        "rest_framework_simplejwt.authentication.JWTAuthentication",
+        # JWT + yopilgan sessiyaning access tokenini darhol rad etish (users/authentication.py)
+        "users.authentication.SessionJWTAuthentication",
     ),
     "DEFAULT_PERMISSION_CLASSES": ("rest_framework.permissions.IsAuthenticated",),
     "DEFAULT_THROTTLE_CLASSES": (
@@ -160,6 +161,7 @@ REST_FRAMEWORK = {
         "queue_take": "20/hour",
         "kiosk": "300/hour",
         "checkin": "30/hour",
+        "sessions": "60/hour",
     },
     "DEFAULT_RENDERER_CLASSES": (
         "rest_framework.renderers.JSONRenderer",

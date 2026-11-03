@@ -25,6 +25,7 @@ urlpatterns = [
     path("api/records/", include("records.urls")),
     path("api/queue/", include("appointments.urls")),
     path("api/labs/", include("labs.urls")),
+    path("api/monitoring/", include("monitoring.urls")),
 ]
 
 if settings.DEBUG:

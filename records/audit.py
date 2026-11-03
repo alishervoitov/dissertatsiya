@@ -15,7 +15,7 @@ def log_audit(actor, action, patient=None, medical_record=None, detail=""):
     ip = get_client_ip(request) if request else None
     user_agent = request.META.get("HTTP_USER_AGENT", "")[:300] if request else ""
 
-    AuditLog.objects.create(
+    entry = AuditLog.objects.create(
         actor=actor,
         action=action,
         patient=patient,
@@ -30,3 +30,8 @@ def log_audit(actor, action, patient=None, medical_record=None, detail=""):
         getattr(patient, "id", None), getattr(medical_record, "id", None),
         ip, detail,
     )
+    # Shubhali faollik qoidalari (xato bo'lsa ham so'rov buzilmaydi)
+    from monitoring.detector import safe_check
+
+    safe_check(entry)
+    return entry

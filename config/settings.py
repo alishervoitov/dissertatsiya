@@ -47,6 +47,7 @@ INSTALLED_APPS = [
     'records',
     'appointments',
     'labs',
+    'monitoring',
     'django_celery_beat',
 ]
 
@@ -291,3 +292,6 @@ if os.environ.get("USE_HTTPS", "0") == "1":
 # QUEUE_KIOSK_KEY bo'sh bo'lsa kiosk endpointlari yopiq.
 QUEUE_TIME_ZONE = os.environ.get("QUEUE_TIME_ZONE", "Asia/Tashkent")
 QUEUE_KIOSK_KEY = os.environ.get("QUEUE_KIOSK_KEY", "")
+
+# Shubhali faollik qoidalari chegaralari (monitoring/detector.py). Bo'sh qoldirilsa standart qiymatlar.
+SECURITY_ALERTS = {}

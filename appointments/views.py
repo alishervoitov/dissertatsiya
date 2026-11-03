@@ -149,7 +149,30 @@ class DoctorCallNextView(APIView):
         ticket = call_next(profile)
         from notifications.services import notify_queue
         notify_queue(profile)
-        return Response({"called": DoctorTicketSerializer((ticket, None)).data if ticket else None})
+        # Chaqirilgan bemordan oldingi raqamli, lekin hali kelmagan onlayn bemorlar
+        skipped = []
+        if ticket:
+            skipped = list(QueueTicket.objects.filter(
+                doctor=request.user, date=ticket.date, status=QueueTicket.WAITING,
+                arrived_at__isnull=True, number__lt=ticket.number,
+            ).order_by("number").values_list("number", flat=True))
+        return Response({
+            "called": DoctorTicketSerializer((ticket, None)).data if ticket else None,
+            "skipped": skipped,
+        })
+
+
+class DoctorQueueCountView(APIView):
+    """Menyudagi raqam uchun: shifoxonada kutayotganlar va hali kelmagan onlayn bemorlar."""
+
+    permission_classes = [IsDoctor]
+
+    def get(self, request):
+        qs = QueueTicket.objects.filter(doctor=request.user, date=today(), status=QueueTicket.WAITING)
+        return Response({
+            "present": qs.filter(arrived_at__isnull=False).count(),
+            "pending": qs.filter(arrived_at__isnull=True).count(),
+        })
 
 
 class DoctorFinishView(APIView):

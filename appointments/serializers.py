@@ -85,6 +85,7 @@ class DoctorTicketSerializer(serializers.Serializer):
             "patient_id": ticket.patient_id,
             "doctor_id": ticket.doctor_id,
             "eta": _local_iso(eta),
+            "arrived_at": _local_iso(ticket.arrived_at),
             "called_at": _local_iso(ticket.called_at),
             "finished_at": _local_iso(ticket.finished_at),
         }

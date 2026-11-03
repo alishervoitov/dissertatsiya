@@ -6,6 +6,7 @@ from datetime import datetime, time, timedelta
 from unittest import mock
 from zoneinfo import ZoneInfo
 
+from django.core.cache import cache
 from django.db import connection
 from django.test import override_settings
 from rest_framework import status
@@ -27,6 +28,7 @@ def at(h, m=0):
 
 class QueueTestBase(APITestCase):
     def setUp(self):
+        cache.clear()  # throttle hisoblagichlari testlar orasida to'planmasin
         self.clock = mock.patch("django.utils.timezone.now", return_value=at(10, 0))
         self.now = self.clock.start()
         self.addCleanup(self.clock.stop)
@@ -362,3 +364,29 @@ class ArrivalTests(QueueTestBase):
         t = self.take().data
         self.client.post(f"/api/queue/tickets/{t['id']}/cancel/")
         self.assertEqual(self.arrive(t["id"]).status_code, 409)
+
+
+class DoctorArrivalSignalTests(QueueTestBase):
+    """Shifokor menyusidagi raqam va o'tkazib yuborilgan onlayn bemorlar."""
+
+    def test_count_and_skipped(self):
+        self.set_time(8, 30)
+        online = self.take().data                      # №1, hali kelmagan
+        self.set_time(9, 0)
+        self.registry("Ali")                           # №2, shifoxonada
+        self.client.force_authenticate(self.doctor)
+        self.assertEqual(self.client.get("/api/queue/doctor/count/").data, {"present": 1, "pending": 1})
+        r = self.client.post("/api/queue/doctor/next/").data
+        self.assertEqual((r["called"]["number"], r["skipped"]), (2, [1]))
+        self.assertEqual(self.client.get("/api/queue/doctor/count/").data, {"present": 0, "pending": 1})
+        self.client.force_authenticate(self.pat_user)
+        self.client.post(f"/api/queue/tickets/{online['id']}/arrive/")
+        self.client.force_authenticate(self.doctor)
+        self.assertEqual(self.client.get("/api/queue/doctor/count/").data, {"present": 1, "pending": 0})
+        row = next(x for x in self.client.get("/api/queue/doctor/").data["tickets"] if x["number"] == 1)
+        self.assertEqual(row["arrived_at"], "2026-11-02T09:00+05:00")
+        self.assertEqual(self.client.post("/api/queue/doctor/next/").data["skipped"], [])
+
+    def test_count_only_for_doctor(self):
+        self.client.force_authenticate(self.pat_user)
+        self.assertEqual(self.client.get("/api/queue/doctor/count/").status_code, 403)

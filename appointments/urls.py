@@ -9,6 +9,7 @@ urlpatterns = [
     path("tickets/<int:pk>/arrive/", views.ArriveView.as_view(), name="queue-arrive"),
     path("tickets/<int:pk>/cancel/", views.CancelTicketView.as_view(), name="queue-cancel"),
     path("doctor/", views.DoctorQueueView.as_view(), name="queue-doctor"),
+    path("doctor/count/", views.DoctorQueueCountView.as_view(), name="queue-doctor-count"),
     path("doctor/next/", views.DoctorCallNextView.as_view(), name="queue-doctor-next"),
     path("doctor/finish/", views.DoctorFinishView.as_view(), name="queue-doctor-finish"),
     path("doctor/tickets/<int:pk>/no-show/", views.DoctorNoShowView.as_view(), name="queue-doctor-noshow"),

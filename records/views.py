@@ -1,3 +1,5 @@
+import logging
+
 from rest_framework import generics, status
 from rest_framework.response import Response
 
@@ -29,6 +31,9 @@ from .serializers import RecordAttachmentSerializer
 from .models import Prescription
 from .permissions import PrescriptionObjectPermission
 from .serializers import PrescriptionSerializer
+
+security_logger = logging.getLogger("security")
+
 
 class PatientListView(generics.ListAPIView):
     """Shifokor/administrator uchun barcha bemorlar ro'yxati (qidiruv bilan)."""
@@ -284,15 +289,23 @@ class RecordAttachmentListCreateView(generics.ListCreateAPIView):
         if uploaded_file.size > RecordAttachment.MAX_SIZE_BYTES:
             return Response({"detail": "Fayl hajmi 10 MB dan oshmasligi kerak."}, status=status.HTTP_400_BAD_REQUEST)
 
-        if uploaded_file.content_type not in RecordAttachment.ALLOWED_CONTENT_TYPES:
+        # Brauzer aytgan turga (Content-Type) emas, faylning imzosiga ishonamiz
+        from .filetypes import detect_type
+
+        real_type = detect_type(uploaded_file)
+        if real_type not in RecordAttachment.ALLOWED_CONTENT_TYPES:
+            security_logger.warning(
+                "Fayl rad etildi: e'lon qilingan tur %s, imzo mos emas (%s, foydalanuvchi %s)",
+                uploaded_file.content_type, uploaded_file.name[:100], request.user.username,
+            )
             return Response(
                 {"detail": "Faqat JPEG, PNG, WEBP rasm yoki PDF fayllar qabul qilinadi."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
         attachment = RecordAttachment.objects.create(
-            record=record, file=uploaded_file, original_filename=uploaded_file.name,
-            content_type=uploaded_file.content_type, file_size=uploaded_file.size,
+            record=record, file=uploaded_file, original_filename=uploaded_file.name[:255],
+            content_type=real_type, file_size=uploaded_file.size,
             uploaded_by=request.user,
         )
         log_audit(

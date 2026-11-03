@@ -14,24 +14,8 @@ from .models import LabAttachment, LabResult
 from .permissions import IsLab, can_edit_result, can_read_result
 from .serializers import LabAttachmentSerializer, LabPatientSerializer, LabResultSerializer
 
-# Fayl turini mijoz yuborgan Content-Type ga emas, faylning o'z imzosiga qarab tekshiramiz
-MAGIC = {
-    "application/pdf": [b"%PDF-"],
-    "image/png": [b"\x89PNG\r\n\x1a\n"],
-    "image/jpeg": [b"\xff\xd8\xff"],
-    "image/webp": [b"RIFF"],
-}
-
-
-def _sniff(uploaded):
-    head = uploaded.read(16)
-    uploaded.seek(0)
-    for ctype, sigs in MAGIC.items():
-        if any(head.startswith(s) for s in sigs):
-            if ctype == "image/webp" and head[8:12] != b"WEBP":
-                continue
-            return ctype
-    return None
+# Fayl turi mijoz yuborgan Content-Type bo'yicha emas, faylning o'z imzosi bo'yicha aniqlanadi
+from records.filetypes import detect_type as _sniff  # noqa: E402
 
 
 def _results_qs():

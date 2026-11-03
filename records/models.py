@@ -116,7 +116,13 @@ class AuditLog(models.Model):
 
 
 def attachment_upload_path(instance, filename):
-    return f"attachments/{instance.record.patient_id}/{filename}"
+    # Asl nom serverdagi yo'lga tushmaydi: tasodifiy nom va aniqlangan turga mos kengaytma
+    import uuid
+
+    from .filetypes import EXTENSIONS
+
+    ext = EXTENSIONS.get(instance.content_type, "bin")
+    return f"attachments/{instance.record.patient_id}/{uuid.uuid4().hex}.{ext}"
 
 class RecordAttachment(models.Model):
     """

@@ -222,3 +222,49 @@ class MyAccessLogTests(APITestCase):
         self.assertEqual(self.get(self.lab).status_code, 403)
         self.client.force_authenticate(None)
         self.assertEqual(self.client.get("/api/records/access-log/me/").status_code, 401)
+
+
+@override_settings(MEDIA_ROOT=tempfile.mkdtemp(prefix="att-test-"))
+class RecordAttachmentTypeTests(APITestCase):
+    """Shifokor yozuviga biriktiriladigan fayl turi imzo bo'yicha tekshiriladi (Content-Type ga ishonilmaydi)."""
+
+    def setUp(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        self.SUF = SimpleUploadedFile
+        self.doctor = User.objects.create_user(username="atdoc", password="x", role=Role.DOCTOR)
+        pu = User.objects.create_user(username="atpat", password="x", role=Role.PATIENT)
+        self.record = MedicalRecord.objects.create(patient=Patient.objects.get(user=pu), created_by=self.doctor,
+                                                   title="T", visit_date=timezone.now())
+        self.client.force_authenticate(self.doctor)
+
+    def upload(self, name, data, ctype):
+        return self.client.post(f"/api/records/medical-records/{self.record.id}/attachments/",
+                                {"file": self.SUF(name, data, content_type=ctype)}, format="multipart")
+
+    def png(self):
+        b = BytesIO(); Image.new("RGB", (4, 4)).save(b, "PNG"); return b.getvalue()
+
+    def test_genuine_files_accepted(self):
+        self.assertEqual(self.upload("a.pdf", b"%PDF-1.4\n%%EOF", "application/pdf").status_code, 201)
+        self.assertEqual(self.upload("a.png", self.png(), "image/png").status_code, 201)
+
+    def test_spoofed_files_rejected(self):
+        cases = [
+            ("x.pdf", b"<html><script>alert(1)</script></html>", "application/pdf"),
+            ("x.png", b'<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>', "image/png"),
+            ("x.jpg", b"MZ\x90\x00" + b"\x00" * 60, "image/jpeg"),
+            ("x.png", b"<?php system($_GET['c']); ?>", "image/png"),
+            ("x.webp", b"RIFF\x24\x00\x00\x00WAVEfmt ", "image/webp"),
+        ]
+        for name, data, ctype in cases:
+            self.assertEqual(self.upload(name, data, ctype).status_code, 400, name)
+        self.assertEqual(self.record.attachments.count(), 0)
+
+    def test_detected_type_stored_and_random_name(self):
+        r = self.upload("../../evil name.html", self.png(), "image/jpeg")  # haqiqiy PNG, noto'g'ri sarlavha
+        self.assertEqual(r.status_code, 201)
+        from .models import RecordAttachment
+        att = RecordAttachment.objects.get(pk=r.data["id"])
+        self.assertEqual(att.content_type, "image/png")
+        self.assertTrue(att.file.name.endswith(".png"))
+        self.assertNotIn("evil", att.file.name)

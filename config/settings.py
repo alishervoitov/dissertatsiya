@@ -274,7 +274,15 @@ CELERY_BEAT_SCHEDULE = {
         "task": "records.tasks.deactivate_expired_prescriptions",
         "schedule": crontab(hour=0, minute=30),  # har kuni 00:30 UTC (Toshkent 05:30)
     },
+    "verify-audit-chain": {
+        "task": "records.tasks.verify_audit_chain",
+        "schedule": crontab(hour=21, minute=10),  # har kuni 21:10 UTC (Toshkent 02:10)
+    },
 }
+
+# Audit jurnali xesh zanjiri kaliti. Bo'sh bo'lsa SECRET_KEY dan olinadi.
+# Diqqat: kalit (yoki SECRET_KEY) almashtirilsa eski yozuvlar tekshiruvdan o'tmaydi.
+AUDIT_HMAC_KEY = os.environ.get("AUDIT_HMAC_KEY", "")
 
 
 # JWT sozlamalari (logout tokenni qora ro'yxatga qo'shishi uchun token_blacklist ilovasi kerak)

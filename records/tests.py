@@ -268,3 +268,129 @@ class RecordAttachmentTypeTests(APITestCase):
         self.assertEqual(att.content_type, "image/png")
         self.assertTrue(att.file.name.endswith(".png"))
         self.assertNotIn("evil", att.file.name)
+
+
+class AuditHashChainTests(APITestCase):
+    """Audit jurnali HMAC xesh zanjiri: har qanday o'zgartirish, o'chirish yoki qisqartirish aniqlanadi."""
+
+    def setUp(self):
+        self.admin = User.objects.create_user(username="aud_admin", password="x", role=Role.ADMIN)
+        self.doctor = User.objects.create_user(username="aud_doc", password="x", role=Role.DOCTOR)
+        self.patient = Patient.objects.get(user=User.objects.create_user(username="aud_pat", password="x", role=Role.PATIENT))
+        from .audit import log_audit
+        self.entries = [log_audit(self.doctor, "view", patient=self.patient, detail=f"Ko'rish {i}") for i in range(6)]
+
+    def verify(self):
+        from . import audit_chain
+        from .models import AuditCheckpoint
+        return audit_chain.verify(AuditLog, AuditCheckpoint)
+
+    def test_chain_links_and_verifies(self):
+        e = self.entries
+        self.assertEqual(e[0].prev_hash, "0" * 64)
+        for a, b in zip(e, e[1:]):
+            self.assertEqual(b.prev_hash, a.entry_hash)
+        self.assertEqual(e[2].actor_snapshot, f"{self.doctor.pk}:aud_doc:doctor")
+        r = self.verify()
+        self.assertTrue(r["ok"])
+        self.assertEqual((r["checked"], r["head"]), (6, e[-1].entry_hash))
+
+    def test_direct_create_is_also_chained(self):
+        x = AuditLog.objects.create(actor=self.admin, action="view", detail="to'g'ridan-to'g'ri")
+        self.assertEqual(x.prev_hash, self.entries[-1].entry_hash)
+        self.assertTrue(self.verify()["ok"])
+
+    def test_orm_save_and_delete_blocked(self):
+        e = self.entries[1]
+        e.detail = "soxta"
+        with self.assertRaises(PermissionError):
+            e.save()
+        with self.assertRaises(PermissionError):
+            e.delete()
+
+    def test_detects_modified_detail(self):
+        AuditLog.objects.filter(pk=self.entries[2].pk).update(detail="Hech narsa ko'rilmadi")
+        r = self.verify()
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["problems"], [{"type": "modified", "id": self.entries[2].pk}])
+
+    def test_detects_changed_actor_or_time(self):
+        AuditLog.objects.filter(pk=self.entries[3].pk).update(actor_snapshot=f"{self.admin.pk}:aud_admin:admin")
+        AuditLog.objects.filter(pk=self.entries[4].pk).update(timestamp=timezone.now() - timedelta(days=3))
+        ids = {p["id"] for p in self.verify()["problems"]}
+        self.assertEqual(ids, {self.entries[3].pk, self.entries[4].pk})
+
+    def test_detects_deleted_middle_row(self):
+        AuditLog.objects.filter(pk=self.entries[2].pk)._raw_delete(AuditLog.objects.db)
+        r = self.verify()
+        self.assertEqual(r["problems"], [{"type": "link", "id": self.entries[3].pk}])
+
+    def test_rehash_without_key_is_detected(self):
+        """Buzg'unchi oddiy SHA-256 bilan zanjirni qayta hisoblasa ham HMAC kaliti yo'qligi sabab ushlanadi."""
+        import hashlib
+        from . import audit_chain
+        e = AuditLog.objects.get(pk=self.entries[5].pk)
+        e.detail = "yashirilgan"
+        fake = hashlib.sha256(audit_chain.payload(e, e.prev_hash)).hexdigest()
+        AuditLog.objects.filter(pk=e.pk).update(detail="yashirilgan", entry_hash=fake)
+        self.assertEqual(self.verify()["problems"], [{"type": "modified", "id": e.pk}])
+
+    def test_tail_truncation_detected_by_checkpoint(self):
+        from .audit_integrity import run_check
+        self.assertTrue(run_check(make_checkpoint=True)["ok"])
+        AuditLog.objects.filter(pk__gte=self.entries[4].pk)._raw_delete(AuditLog.objects.db)
+        r = self.verify()
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["problems"][0]["type"], "truncated")
+
+    def test_user_deletion_keeps_chain_valid(self):
+        self.doctor.delete()                       # FK NULL bo'ladi, lekin snapshot xeshda saqlangan
+        self.assertTrue(self.verify()["ok"])
+        self.assertEqual(AuditLog.objects.get(pk=self.entries[0].pk).actor_snapshot.split(":")[1], "aud_doc")
+
+    def test_api_and_alert(self):
+        from monitoring.models import SecurityAlert
+        self.client.force_authenticate(self.doctor)
+        self.assertEqual(self.client.get("/api/records/audit-logs/verify/").status_code, 403)
+        self.client.force_authenticate(self.admin)
+        r = self.client.get("/api/records/audit-logs/verify/").data
+        self.assertTrue(r["ok"])
+        AuditLog.objects.filter(pk=self.entries[0].pk).update(detail="x")
+        r = self.client.get("/api/records/audit-logs/verify/").data
+        self.assertFalse(r["ok"])
+        self.assertEqual(SecurityAlert.objects.filter(rule="audit_tamper", severity="high").count(), 1)
+        self.client.get("/api/records/audit-logs/verify/")
+        self.assertEqual(SecurityAlert.objects.get(rule="audit_tamper").count, 2)   # takroriy alert emas
+
+    def test_daily_task_creates_checkpoint(self):
+        from .models import AuditCheckpoint
+        from .tasks import verify_audit_chain
+        self.assertEqual(verify_audit_chain()["ok"], True)
+        cp = AuditCheckpoint.objects.get()
+        self.assertEqual((cp.last_id, cp.count), (self.entries[-1].pk, 6))
+
+
+class AuditRekeyTests(TestCase):
+    def setUp(self):
+        from .audit import log_audit
+        self.doctor = User.objects.create_user(username="rk_doc", password="x", role=Role.DOCTOR)
+        for i in range(4):
+            log_audit(self.doctor, "view", detail=f"r{i}")          # SECRET_KEY asosidagi kalit
+
+    def test_rekey_from_secret_key(self):
+        from django.core.management import call_command
+        from . import audit_chain
+        with override_settings(AUDIT_HMAC_KEY="d" * 64):
+            self.assertFalse(audit_chain.verify(AuditLog)["ok"])   # yangi kalit bilan eski zanjir o'tmaydi
+            call_command("rekey_audit_chain", "--from-secret-key")
+            r = audit_chain.verify(AuditLog)
+            self.assertTrue(r["ok"])
+            self.assertEqual(r["checked"], 5)                        # + kalit almashtirilgani haqida yozuv
+
+    def test_rekey_refuses_tampered_chain(self):
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+        AuditLog.objects.filter(detail="r1").update(detail="soxta")
+        with override_settings(AUDIT_HMAC_KEY="d" * 64):
+            with self.assertRaises(CommandError):
+                call_command("rekey_audit_chain", "--from-secret-key")

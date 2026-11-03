@@ -39,3 +39,12 @@ def deactivate_expired_prescriptions():
 
     security_logger.info("Davriy vazifa: %s ta retsept muddati tugagani uchun yopildi", expired_count)
     return expired_count
+
+
+@shared_task
+def verify_audit_chain():
+    """Har kuni: audit zanjirini tekshiradi, butun bo'lsa nazorat nuqtasi qo'yadi, aks holda ogohlantiradi."""
+    from .audit_integrity import run_check
+
+    result = run_check(make_checkpoint=True)
+    return {"ok": result["ok"], "checked": result["checked"], "problems": len(result["problems"])}

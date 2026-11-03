@@ -169,6 +169,20 @@ class AuditLogListView(generics.ListAPIView):
 
 
 
+class AuditIntegrityView(APIView):
+    """Administrator: audit jurnali xesh zanjirini hozir tekshirish."""
+
+    permission_classes = [IsAdmin]
+
+    def get(self, request):
+        from .audit_integrity import run_check
+
+        result = run_check(make_checkpoint=False)
+        log_audit(request.user, "view",
+                  detail=f"Audit jurnali yaxlitligi tekshirildi: {'butun' if result['ok'] else 'BUZILGAN'}")
+        return Response(result)
+
+
 class AnonymizedExportView(APIView):
     permission_classes = [IsAdmin]
 

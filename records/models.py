@@ -1,5 +1,6 @@
 from django.conf import settings
-from django.db import models
+from django.db import models, transaction
+from django.utils import timezone
 
 from .encryption import EncryptedCharField, EncryptedTextField
 from .storage import protected_storage
@@ -105,13 +106,61 @@ class AuditLog(models.Model):
     detail = models.CharField(max_length=255, blank=True)
     ip_address = models.GenericIPAddressField(null=True, blank=True)
     user_agent = models.CharField(max_length=300, blank=True)
-    timestamp = models.DateTimeField(auto_now_add=True)
+    # Vaqt save() da qo'yiladi: u xeshga kiradi, shuning uchun bazaga yozilishidan oldin ma'lum bo'lishi kerak
+    timestamp = models.DateTimeField(editable=False)
+
+    # --- Yaxlitlik (xesh zanjiri, qarang records/audit_chain.py) ---
+    # FK'lar foydalanuvchi/bemor o'chirilganda NULL bo'lishi mumkin, shuning uchun xeshga
+    # ularning yozilgan paytdagi nusxasi kiradi.
+    actor_snapshot = models.CharField(max_length=150, blank=True, editable=False)
+    patient_ref = models.IntegerField(null=True, blank=True, editable=False)
+    record_ref = models.IntegerField(null=True, blank=True, editable=False)
+    prev_hash = models.CharField(max_length=64, blank=True, editable=False)
+    entry_hash = models.CharField(max_length=64, blank=True, editable=False, db_index=True)
 
     class Meta:
         ordering = ["-timestamp"]
 
     def __str__(self):
         return f"[{self.timestamp:%Y-%m-%d %H:%M}] {self.actor} -> {self.action}"
+
+    def save(self, *args, **kwargs):
+        """Faqat yangi yozuv qo'shish mumkin; u zanjirning oxiriga ulanadi."""
+        if not self._state.adding:
+            raise PermissionError("Audit yozuvini o'zgartirib bo'lmaydi.")
+        from . import audit_chain
+
+        if self.timestamp is None:
+            self.timestamp = timezone.now()
+        self.detail = (self.detail or "")[:255]
+        self.user_agent = (self.user_agent or "")[:300]
+        self.actor_snapshot = audit_chain.actor_snapshot(self.actor)
+        self.patient_ref = self.patient_id
+        self.record_ref = self.medical_record_id
+        with transaction.atomic():
+            audit_chain.lock_chain()
+            self.prev_hash = audit_chain.head_hash(type(self))
+            self.entry_hash = audit_chain.compute_hash(self, self.prev_hash)
+            super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise PermissionError("Audit yozuvini o'chirib bo'lmaydi.")
+
+
+class AuditCheckpoint(models.Model):
+    """Kunlik nazorat nuqtasi: zanjir oxiri (id, xesh, yozuvlar soni). Oxiridan yozuvlar
+    o'chirilsa (zanjirning o'zi buni sezmaydi) shu nuqta orqali aniqlanadi."""
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    last_id = models.BigIntegerField()
+    last_hash = models.CharField(max_length=64)
+    count = models.BigIntegerField()
+
+    class Meta:
+        ordering = ["-id"]
+
+    def __str__(self):
+        return f"#{self.last_id} {self.last_hash[:12]} ({self.created_at:%Y-%m-%d})"
 
 
 

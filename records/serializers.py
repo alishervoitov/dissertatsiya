@@ -58,7 +58,7 @@ class AuditLogSerializer(serializers.ModelSerializer):
         model = AuditLog
         fields = [
             "id", "actor", "actor_name", "action", "patient", "patient_name",
-            "medical_record", "detail", "ip_address", "user_agent", "timestamp",
+            "medical_record", "detail", "ip_address", "user_agent", "timestamp", "entry_hash",
         ]
 
 

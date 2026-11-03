@@ -9,6 +9,7 @@ urlpatterns = [
     path("medical-records/", views.MedicalRecordListCreateView.as_view(), name="record-list-create"),
     path("medical-records/<int:pk>/", views.MedicalRecordDetailView.as_view(), name="record-detail"),
     path("audit-logs/", views.AuditLogListView.as_view(), name="audit-log-list"),
+    path("audit-logs/verify/", views.AuditIntegrityView.as_view(), name="audit-log-verify"),
     path("access-log/me/", views.MyAccessLogView.as_view(), name="my-access-log"),
     path("export-anonymized/", views.AnonymizedExportView.as_view(), name="export-anonymized"),
     path("patients/<int:patient_id>/history-pdf/", views.PatientHistoryPDFView.as_view(), name="patient-history-pdf"),

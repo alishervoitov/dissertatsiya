@@ -809,7 +809,7 @@ class CorsPolicyTests(APITestCase):
         api = self.preflight("/api/auth/login/", "https://partner.example")
         self.assertEqual(api["Access-Control-Allow-Origin"], "https://partner.example")
         self.assertNotIn("Access-Control-Allow-Credentials", api)
-        admin = self.preflight("/admin/login/", "https://partner.example")
+        admin = self.preflight("/django-admin/login/", "https://partner.example")
         self.assertNotIn("Access-Control-Allow-Origin", admin)
         other = self.preflight("/api/auth/login/", "https://evil.example")
         self.assertNotIn("Access-Control-Allow-Origin", other)
@@ -931,3 +931,13 @@ class ActiveSessionTests(APITestCase):
 
     def test_requires_auth(self):
         self.assertEqual(self.client.get("/api/auth/sessions/").status_code, 401)
+
+
+class DjangoAdminPathTests(APITestCase):
+    """/admin/... saytning o'z sahifalari uchun; Django admin /django-admin/ da."""
+
+    def test_admin_url(self):
+        from django.urls import reverse
+        self.assertEqual(reverse("admin:index"), "/django-admin/")
+        self.assertEqual(self.client.get("/django-admin/").status_code, 302)   # login sahifasiga
+        self.assertEqual(self.client.get("/admin/").status_code, 404)

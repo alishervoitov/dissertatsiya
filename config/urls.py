@@ -20,7 +20,9 @@ from django.conf import settings
 from django.conf.urls.static import static
 
 urlpatterns = [
-    path("admin/", admin.site.urls),
+    # Django admin /django-admin/ da: /admin/... manzillari saytning (React) admin sahifalariga tegishli,
+    # aks holda sahifa yangilanganda nginx ularni Django'ga yuborib "Not Found" chiqarar edi.
+    path("django-admin/", admin.site.urls),
     path("api/auth/", include("users.urls")),
     path("api/records/", include("records.urls")),
     path("api/queue/", include("appointments.urls")),

@@ -171,3 +171,54 @@ class PatientHistoryPDFTests(APITestCase):
         self.record()
         self.set_avatar("avatars/ok.png", png_bytes())
         self.assertIn(b"/Subtype /Image", self.get_pdf())
+
+
+class MyAccessLogTests(APITestCase):
+    """"Kartamni kim ko'rdi": bemor faqat o'z kartasiga bo'lgan murojaatlarni ko'radi."""
+
+    def setUp(self):
+        self.doctor = User.objects.create_user(username="acdoc", password="x", role=Role.DOCTOR, first_name="Sardor", last_name="Nazarov")
+        self.lab = User.objects.create_user(username="aclab", password="x", role=Role.LAB)
+        pu = User.objects.create_user(username="acpat", password="x", role=Role.PATIENT)
+        self.pat_user = pu
+        self.patient = Patient.objects.get(user=pu)
+        pu2 = User.objects.create_user(username="acpat2", password="x", role=Role.PATIENT)
+        self.patient2 = Patient.objects.get(user=pu2)
+        AuditLog.objects.create(actor=self.doctor, action="view", patient=self.patient, detail="Bemor kartasi ko'rildi", ip_address="10.1.2.3")
+        AuditLog.objects.create(actor=self.doctor, action="export", patient=self.patient, detail="PDF")
+        AuditLog.objects.create(actor=self.lab, action="create", patient=self.patient, detail="Tahlil")
+        AuditLog.objects.create(actor=pu, action="view", patient=self.patient, detail="O'z profilini ko'rdi")
+        AuditLog.objects.create(actor=self.doctor, action="view", patient=self.patient2, detail="Boshqa bemor")
+        old = AuditLog.objects.create(actor=self.doctor, action="view", patient=self.patient, detail="Eski")
+        AuditLog.objects.filter(pk=old.pk).update(timestamp=timezone.now() - timedelta(days=100))
+
+    def get(self, user=None, q=""):
+        self.client.force_authenticate(user or self.pat_user)
+        return self.client.get(f"/api/records/access-log/me/{q}")
+
+    def test_only_own_card_and_not_own_actions(self):
+        r = self.get()
+        self.assertEqual(r.status_code, 200)
+        details = [x["detail"] for x in r.data["results"]]
+        self.assertNotIn("Boshqa bemor", details)
+        self.assertNotIn("O'z profilini ko'rdi", details)
+        self.assertEqual(r.data["summary"], {"people": 2, "events": 4})
+        self.assertIn("Sardor Nazarov", [x["actor_name"] for x in r.data["results"]])
+        self.assertEqual({x["actor_role"] for x in r.data["results"]}, {"doctor", "lab"})
+
+    def test_no_ip_or_user_agent_exposed(self):
+        row = self.get().data["results"][0]
+        self.assertNotIn("ip_address", row)
+        self.assertNotIn("user_agent", row)
+        self.assertNotIn("10.1.2.3", str(self.get().data))
+
+    def test_days_filter(self):
+        details = [x["detail"] for x in self.get(q="?days=30").data["results"]]
+        self.assertNotIn("Eski", details)
+        self.assertEqual(len(details), 3)
+
+    def test_only_patients(self):
+        self.assertEqual(self.get(self.doctor).status_code, 403)
+        self.assertEqual(self.get(self.lab).status_code, 403)
+        self.client.force_authenticate(None)
+        self.assertEqual(self.client.get("/api/records/access-log/me/").status_code, 401)

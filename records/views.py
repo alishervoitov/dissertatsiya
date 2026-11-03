@@ -2,7 +2,7 @@ from rest_framework import generics, status
 from rest_framework.response import Response
 
 from users.models import Role
-from users.permissions import IsAdmin, IsAdminOrDoctor
+from users.permissions import IsAdmin, IsAdminOrDoctor, IsPatient
 
 from .audit import log_audit
 from .models import AuditLog, MedicalRecord, Patient
@@ -393,3 +393,34 @@ class PrescriptionDetailView(generics.RetrieveUpdateDestroyAPIView):
             detail=f"Retsept o'chirildi: {instance.medication_name}",
         )
         instance.delete()
+
+
+class MyAccessLogView(APIView):
+    """
+    "Kartamni kim ko'rdi": bemor o'z tibbiy ma'lumotlariga kim, qachon va qanday
+    murojaat qilganini ko'radi (shaxsga doir ma'lumotlar subyektining o'z ma'lumotlari
+    kimga berilgani haqida bilish huquqi). Bemorning o'z harakatlari ko'rsatilmaydi.
+    """
+
+    permission_classes = [IsPatient]
+    MAX_ROWS = 500
+
+    def get(self, request):
+        from datetime import timedelta
+        from django.utils import timezone
+        from .serializers import PatientAccessLogSerializer
+
+        patient = Patient.objects.filter(user=request.user).first()
+        if patient is None:
+            return Response({"results": [], "summary": {"people": 0, "events": 0}})
+        qs = (AuditLog.objects.filter(patient=patient).exclude(actor=request.user)
+              .select_related("actor").order_by("-timestamp"))
+        days = request.query_params.get("days")
+        if days and days.isdigit() and int(days) > 0:
+            qs = qs.filter(timestamp__gte=timezone.now() - timedelta(days=int(days)))
+        rows = list(qs[: self.MAX_ROWS])
+        people = {r.actor_id for r in rows}
+        return Response({
+            "results": PatientAccessLogSerializer(rows, many=True).data,
+            "summary": {"people": len(people), "events": len(rows)},
+        })

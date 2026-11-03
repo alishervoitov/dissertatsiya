@@ -63,6 +63,26 @@ class AuditLogSerializer(serializers.ModelSerializer):
 
 
 
+class PatientAccessLogSerializer(serializers.ModelSerializer):
+    """Bemorga ko'rsatiladigan kirish yozuvi: kim, qaysi rolda, qachon, nima qildi.
+    Xodimning IP manzili va brauzer ma'lumoti bemorga berilmaydi."""
+
+    actor_name = serializers.SerializerMethodField()
+    actor_role = serializers.SerializerMethodField()
+
+    class Meta:
+        model = AuditLog
+        fields = ["id", "timestamp", "action", "actor_name", "actor_role", "detail"]
+
+    def get_actor_name(self, obj):
+        if not obj.actor:
+            return None
+        return obj.actor.get_full_name() or obj.actor.username
+
+    def get_actor_role(self, obj):
+        return obj.actor.role if obj.actor else None
+
+
 class RecordAttachmentSerializer(serializers.ModelSerializer):
     uploaded_by_name = serializers.CharField(source="uploaded_by.get_full_name", read_only=True)
 

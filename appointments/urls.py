@@ -19,6 +19,7 @@ urlpatterns = [
     path("kiosk/doctors/", views.KioskDoctorListView.as_view(), name="queue-kiosk-doctors"),
     path("kiosk/checkin-code/", views.KioskCheckinCodeView.as_view(), name="queue-kiosk-checkin-code"),
     path("checkin/", views.CheckinView.as_view(), name="queue-checkin"),
+    path("admin/stats/", views.AdminQueueStatsView.as_view(), name="queue-admin-stats"),
     path("admin/printed-checkin/", views.AdminPrintedCheckinView.as_view(), name="queue-admin-printed-checkin"),
     path("kiosk/tickets/", views.KioskTicketView.as_view(), name="queue-kiosk-take"),
 ]

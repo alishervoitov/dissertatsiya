@@ -393,3 +393,17 @@ class CheckinView(APIView):
                       detail=f"Shifoxonaga kelish QR orqali tasdiqlandi ({kind}): "
                              + ", ".join(f"№{t.number}" for t in newly))
         return Response({"tickets": [_ticket_data(t) for t in tickets], "confirmed": len(newly)})
+
+
+class AdminQueueStatsView(APIView):
+    """Administrator: navbat statistikasi (?days=7|30|90)."""
+
+    permission_classes = [IsAdmin]
+
+    def get(self, request):
+        from .stats import queue_stats
+        try:
+            days = int(request.query_params.get("days", 30))
+        except (TypeError, ValueError):
+            days = 30
+        return Response(queue_stats(days))

@@ -480,3 +480,39 @@ class QrCheckinTests(QueueTestBase):
         t = self.take().data
         self.client.force_authenticate(self.pat_user)
         self.assertEqual(self.client.post(f"/api/queue/tickets/{t['id']}/arrive/").status_code, 200)
+
+
+class QueueStatsTests(QueueTestBase):
+    """Administrator statistikasi: kutish vaqti, kelmaganlar ulushi, shifokorlar reytingi."""
+
+    def test_stats(self):
+        self.set_time(8, 30)
+        online = self.take().data                                   # №1 onlayn, kelmaydi
+        self.set_time(9, 0)
+        a = self.registry("A").data                                 # №2 09:00 keldi
+        self.set_time(9, 10)
+        b = self.registry("B").data                                 # №3 09:10 keldi
+        self.registry("C", doctor=self.doctor2)                     # boshqa shifokor, ochiq qoladi
+        self.client.force_authenticate(self.doctor)
+        self.set_time(9, 20); self.client.post("/api/queue/doctor/next/")       # A: kutish 20
+        self.set_time(9, 35); self.client.post("/api/queue/doctor/next/")       # A yakun (15), B: kutish 25
+        self.set_time(9, 50); self.client.post("/api/queue/doctor/finish/")     # B yakun (15)
+        self.client.post(f"/api/queue/doctor/tickets/{online['id']}/no-show/")
+        self.client.force_authenticate(self.doctor)
+        self.assertEqual(self.client.get("/api/queue/admin/stats/").status_code, 403)
+        self.client.force_authenticate(self.admin)
+        d = self.client.get("/api/queue/admin/stats/", {"days": 7}).data
+        t = d["totals"]
+        self.assertEqual((t["tickets"], t["done"], t["no_show"], t["open"]), (4, 2, 1, 1))
+        self.assertEqual(t["no_show_rate"], 33.3)                   # 1 / (2 + 1)
+        self.assertEqual((t["avg_wait_min"], t["median_wait_min"], t["avg_service_min"]), (22.5, 22.5, 15.0))
+        self.assertEqual(d["doctors"][0]["id"], self.doctor.id)     # eng ko'p qabul
+        self.assertEqual(d["doctors"][0]["no_show_rate"], 33.3)
+        src = {x["source"]: x for x in d["by_source"]}
+        self.assertEqual((src["online"]["no_show_rate"], src["registry"]["no_show_rate"]), (100.0, 0.0))
+        self.assertEqual(len(d["by_day"]), 7)
+        self.assertEqual(d["by_day"][-1]["done"], 2)
+        self.assertEqual({h["hour"]: h["count"] for h in d["by_hour"]}, {9: 3})
+        self.assertEqual(d["period"]["days"], 7)
+        self.assertEqual(self.client.get("/api/queue/admin/stats/", {"days": "abc"}).data["period"]["days"], 30)
+        self.assertEqual(self.client.get("/api/queue/admin/stats/", {"days": 5000}).data["period"]["days"], 365)

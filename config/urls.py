@@ -19,10 +19,14 @@ from django.urls import include, path
 from django.conf import settings
 from django.conf.urls.static import static
 
+from users.admin_login import MfaAdminAuthenticationForm
+
+# Django admin ham 2FA ortida: parolning o'zi yetmaydi (users/admin_login.py)
+admin.site.login_form = MfaAdminAuthenticationForm
+admin.site.login_template = "admin/mfa_login.html"
+admin.site.site_header = "ShifoSafe - texnik boshqaruv"
+
 urlpatterns = [
-    # Django admin /django-admin/ da: /admin/... manzillari saytning (React) admin sahifalariga tegishli,
-    # aks holda sahifa yangilanganda nginx ularni Django'ga yuborib "Not Found" chiqarar edi.
-    path("django-admin/", admin.site.urls),
     path("api/auth/", include("users.urls")),
     path("api/records/", include("records.urls")),
     path("api/queue/", include("appointments.urls")),
@@ -30,6 +34,12 @@ urlpatterns = [
     path("api/monitoring/", include("monitoring.urls")),
     path("api/notifications/", include("notifications.urls")),
 ]
+
+# Django admin /django-admin/ da: /admin/... manzillari saytning (React) admin sahifalariga tegishli,
+# aks holda sahifa yangilanganda nginx ularni Django'ga yuborib "Not Found" chiqarar edi.
+# DJANGO_ADMIN_ENABLED=0 - umuman o'chiriladi (404): kundalik ish React admin panelida.
+if settings.DJANGO_ADMIN_ENABLED:
+    urlpatterns.insert(0, path("django-admin/", admin.site.urls))
 
 if settings.DEBUG:
     urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

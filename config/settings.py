@@ -300,6 +300,8 @@ from datetime import timedelta as _td
 # Ikki bosqichli kirish (Google Authenticator) majburiy bo'lgan rollar. Bo'sh qoldirilsa - ixtiyoriy.
 MFA_REQUIRED_ROLES = tuple(r.strip() for r in os.environ.get("MFA_REQUIRED_ROLES", "admin,doctor").split(",") if r.strip())
 MFA_ISSUER = os.environ.get("MFA_ISSUER", "ShifoSafe")
+# Django admin (/django-admin/): yoqilgan bo'lsa ham faqat parol + 2FA bilan kiriladi. 0 - butunlay o'chiq.
+DJANGO_ADMIN_ENABLED = os.environ.get("DJANGO_ADMIN_ENABLED", "1") == "1"
 
 SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": _td(minutes=15),

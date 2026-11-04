@@ -1,0 +1,36 @@
+{% extends "admin/login.html" %}
+{% comment %}
+  Django admin kirishi: login, parol va 2FA kodi (users/admin_login.py).
+{% endcomment %}
+
+{% block content %}
+{% if form.non_field_errors %}
+{% for error in form.non_field_errors %}
+<p class="errornote">{{ error }}</p>
+{% endfor %}
+{% elif form.errors %}
+<p class="errornote">Maydonlarni tekshiring.</p>
+{% endif %}
+
+<div id="content-main">
+<form action="{{ app_path }}" method="post" id="login-form">{% csrf_token %}
+  <div class="form-row">
+    {{ form.username.errors }}
+    {{ form.username.label_tag }} {{ form.username }}
+  </div>
+  <div class="form-row">
+    {{ form.password.errors }}
+    {{ form.password.label_tag }} {{ form.password }}
+  </div>
+  <div class="form-row">
+    {{ form.otp.errors }}
+    {{ form.otp.label_tag }} {{ form.otp }}
+    <div class="help" style="margin-left:0;padding-left:0">{{ form.otp.help_text }}</div>
+    <input type="hidden" name="next" value="{{ next }}">
+  </div>
+  <div class="submit-row">
+    <input type="submit" value="Kirish">
+  </div>
+</form>
+</div>
+{% endblock %}

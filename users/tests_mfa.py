@@ -241,3 +241,55 @@ class ResetCommandTests(MfaTestBase):
         self.admin.refresh_from_db()
         self.assertFalse(self.admin.is_active_2fa)
         self.assertIn("access", self.login("admmfa").data)
+
+
+class DjangoAdminMfaTests(MfaTestBase):
+    """Django admin parolning o'zi bilan ochilmaydi."""
+
+    URL = "/django-admin/login/?next=/django-admin/"
+
+    def setUp(self):
+        super().setUp()
+        self.admin.is_staff = self.admin.is_superuser = True
+        self.admin.save()
+
+    def post(self, otp="", password="Parol-12345"):
+        self.client.force_authenticate(None)
+        self.client.logout()
+        return self.client.post(self.URL, {"username": "admmfa", "password": password, "otp": otp, "next": "/django-admin/"})
+
+    def logged_in(self):
+        return self.client.get("/django-admin/").status_code == 200
+
+    def test_login_page_has_otp_field(self):
+        r = self.client.get(self.URL)
+        self.assertContains(r, 'name="otp"')
+
+    def test_password_only_rejected_without_2fa(self):
+        r = self.post(otp="123456")
+        self.assertContains(r, "ikki bosqichli kirish yoqilgan")
+        self.assertFalse(self.logged_in())
+
+    def test_requires_valid_code(self):
+        secret, codes = self.enroll(self.admin)
+        self.assertEqual(self.post(otp="000000").status_code, 200)            # noto'g'ri kod - forma qaytadi
+        self.assertFalse(self.logged_in())
+        r = self.post(otp=self.code(secret))
+        self.assertEqual(r.status_code, 302)
+        self.assertTrue(self.logged_in())
+        self.client.logout()
+        self.assertEqual(self.post(otp=codes[0]).status_code, 302)          # zaxira kod ham ishlaydi
+
+    def test_wrong_password_with_valid_code(self):
+        secret, _ = self.enroll(self.admin)
+        r = self.post(otp=self.code(secret), password="xato")
+        self.assertEqual(r.status_code, 200)
+        self.assertFalse(self.logged_in())
+
+    def test_lockout_after_failures(self):
+        secret, _ = self.enroll(self.admin)
+        for _ in range(5):
+            self.post(otp="000000")
+        r = self.post(otp=self.code(secret))                                 # to'g'ri kod ham - bloklangan
+        self.assertEqual(r.status_code, 200)
+        self.assertFalse(self.logged_in())

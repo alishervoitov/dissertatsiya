@@ -50,9 +50,16 @@ class QueueTestBase(APITestCase):
         self.client.force_authenticate(user or self.pat_user)
         return self.client.post("/api/queue/tickets/", {"doctor": (doctor or self.doctor).id}, format="json")
 
-    def registry(self, name="", doctor=None):
+    def walk_in_patient(self, name=""):
+        """Registraturaga kelgan odam: har chaqiruvda yangi bemor kartasi."""
+        self._walk_in = getattr(self, "_walk_in", 0) + 1
+        u = User.objects.create_user(username=f"walkin{self._walk_in}", password="x", role=Role.PATIENT, first_name=name)
+        return Patient.objects.get(user=u)
+
+    def registry(self, name="", doctor=None, patient=None):
+        patient = patient or self.walk_in_patient(name)
         self.client.force_authenticate(self.admin)
-        return self.client.post("/api/queue/registry/", {"doctor": (doctor or self.doctor).id, "visitor_name": name}, format="json")
+        return self.client.post("/api/queue/registry/", {"doctor": (doctor or self.doctor).id, "patient": patient.id}, format="json")
 
 
 class NumberingAndEtaTests(QueueTestBase):
@@ -160,12 +167,13 @@ class PatientRulesTests(QueueTestBase):
                                                 detail__startswith="Onlayn navbat").exists())
 
     def test_visitor_name_encrypted_at_rest(self):
-        t = self.registry("Karimov Anvar").data
+        from .services import issue_ticket
+        t = issue_ticket(self.profile, QueueTicket.SOURCE_KIOSK, visitor_name="Karimov Anvar")
         with connection.cursor() as c:
-            c.execute("SELECT visitor_name FROM appointments_queueticket WHERE id=%s", [t["id"]])
+            c.execute("SELECT visitor_name FROM appointments_queueticket WHERE id=%s", [t.id])
             raw = c.fetchone()[0]
         self.assertNotIn("Karimov", raw)
-        self.assertEqual(QueueTicket.objects.get(pk=t["id"]).visitor_name, "Karimov Anvar")
+        self.assertEqual(QueueTicket.objects.get(pk=t.id).visitor_name, "Karimov Anvar")
 
 
 class DoctorActionsTests(QueueTestBase):
@@ -516,3 +524,97 @@ class QueueStatsTests(QueueTestBase):
         self.assertEqual(d["period"]["days"], 7)
         self.assertEqual(self.client.get("/api/queue/admin/stats/", {"days": "abc"}).data["period"]["days"], 30)
         self.assertEqual(self.client.get("/api/queue/admin/stats/", {"days": 5000}).data["period"]["days"], 365)
+
+
+
+class RegistryIdentifyTests(QueueTestBase):
+    """Registratura odamni bemor kartasi bilan aniqlaydi: busiz chipta berilmaydi."""
+
+    def setUp(self):
+        super().setUp()
+        self.anvar_u = User.objects.create_user(username="anvar", password="x", role=Role.PATIENT,
+                                                first_name="Anvar", last_name="Karimov", phone="+998901234567")
+        self.anvar = Patient.objects.get(user=self.anvar_u)
+        self.anvar.date_of_birth = datetime(1990, 5, 1).date()
+        self.anvar.save()
+        self.client.force_authenticate(self.admin)
+
+    def test_ticket_requires_patient(self):
+        r = self.client.post("/api/queue/registry/", {"doctor": self.doctor.id, "visitor_name": "Ali"}, format="json")
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("patient", r.data)
+        self.assertEqual(self.client.post("/api/queue/registry/", {"doctor": self.doctor.id, "patient": 99999},
+                                          format="json").status_code, 400)
+
+    def test_ticket_linked_and_doctor_gets_access(self):
+        r = self.registry(patient=self.anvar)
+        self.assertEqual(r.status_code, 201)
+        self.assertEqual(r.data["patient_name"], "Anvar Karimov")
+        t = QueueTicket.objects.get(pk=r.data["id"])
+        self.assertEqual((t.patient_id, t.arrived), (self.anvar.id, True))
+        self.assertTrue(AuditLog.objects.filter(actor=self.admin, patient=self.anvar,
+                                                detail__startswith="Registratura navbati").exists())
+        self.client.force_authenticate(self.doctor)                    # bugungi navbat -> karta ochiq
+        self.assertEqual(self.client.get(f"/api/records/patients/{self.anvar.id}/").status_code, 200)
+        row = self.client.get("/api/queue/doctor/").data["tickets"][0]
+        self.assertEqual((row["patient_id"], row["name"]), (self.anvar.id, "Anvar Karimov"))
+        self.client.force_authenticate(self.doctor2)                   # boshqa shifokorga emas
+        self.assertEqual(self.client.get(f"/api/records/patients/{self.anvar.id}/").status_code, 403)
+
+    def test_duplicate_ticket_same_doctor(self):
+        self.registry(patient=self.anvar)
+        r = self.registry(patient=self.anvar)
+        self.assertEqual((r.status_code, r.data["code"]), (409, "duplicate"))
+
+    def test_search(self):
+        def q(**params):
+            return [p["id"] for p in self.client.get("/api/queue/registry/patients/", params).data]
+        self.assertEqual(q(q="karimov anvar"), [self.anvar.id])
+        self.assertEqual(q(q="anv", dob="1990-05-01"), [self.anvar.id])
+        self.assertEqual(q(q="anv", dob="1991-05-01"), [])
+        self.assertEqual(q(q="90 123 45 67".replace(" ", "")), [self.anvar.id])     # telefon bo'yicha
+        self.assertEqual(q(), [])                                                    # bo'sh so'rov - hech narsa
+        self.assertEqual(self.client.get("/api/queue/registry/patients/", {"dob": "xx"}).status_code, 400)
+        self.client.force_authenticate(self.doctor)
+        self.assertEqual(self.client.get("/api/queue/registry/patients/", {"q": "anvar"}).status_code, 403)
+
+    def test_create_patient_and_duplicate_warning(self):
+        body = {"first_name": " Dilnoza ", "last_name": "Usmonova", "date_of_birth": "1995-03-08", "phone": "+998 90 111-22-33"}
+        r = self.client.post("/api/queue/registry/patients/", body, format="json")
+        self.assertEqual(r.status_code, 201)
+        self.assertEqual((r.data["full_name"], r.data["has_login"]), ("Dilnoza Usmonova", False))
+        u = User.objects.get(username=r.data["username"])
+        self.assertEqual((u.role, u.has_usable_password()), (Role.PATIENT, False))
+        self.assertEqual(str(Patient.objects.get(user=u).date_of_birth), "1995-03-08")
+        r2 = self.client.post("/api/queue/registry/patients/", body, format="json")
+        self.assertEqual((r2.status_code, r2.data["code"]), (409, "possible_duplicate"))
+        self.assertEqual(r2.data["matches"][0]["id"], r.data["id"])
+        r3 = self.client.post("/api/queue/registry/patients/", {**body, "confirm": True}, format="json")
+        self.assertEqual(r3.status_code, 201)
+        bad = self.client.post("/api/queue/registry/patients/", {**body, "date_of_birth": "2999-01-01", "phone": "abc"}, format="json")
+        self.assertEqual(set(bad.data), {"date_of_birth", "phone"})
+        self.assertTrue(AuditLog.objects.filter(actor=self.admin, action="create",
+                                                detail="Registraturada yangi bemor kartasi ochildi").exists())
+
+    def test_link_kiosk_ticket(self):
+        from .services import issue_ticket
+        kiosk = issue_ticket(self.profile, QueueTicket.SOURCE_KIOSK)
+        url = f"/api/queue/registry/tickets/{kiosk.id}/link/"
+        self.client.force_authenticate(self.doctor)                    # shifokor bog'lay olmaydi
+        self.assertEqual(self.client.post(url, {"patient": self.anvar.id}, format="json").status_code, 403)
+        self.client.force_authenticate(self.admin)
+        r = self.client.post(url, {"patient": self.anvar.id}, format="json")
+        self.assertEqual((r.status_code, r.data["patient_id"], r.data["name"]), (200, self.anvar.id, "Anvar Karimov"))
+        self.assertTrue(AuditLog.objects.filter(actor=self.admin, patient=self.anvar,
+                                                detail__startswith="Navbat chiptasi bemorga bog'landi").exists())
+        r = self.client.post(url, {"patient": self.patient.id}, format="json")          # qayta bog'lab bo'lmaydi
+        self.assertEqual((r.status_code, r.data["code"]), (409, "already_linked"))
+        other = issue_ticket(self.profile, QueueTicket.SOURCE_KIOSK)
+        r = self.client.post(f"/api/queue/registry/tickets/{other.id}/link/", {"patient": self.anvar.id}, format="json")
+        self.assertEqual((r.status_code, r.data["code"]), (409, "duplicate"))
+        other.status = QueueTicket.CANCELLED
+        other.save()
+        self.assertEqual(self.client.post(f"/api/queue/registry/tickets/{other.id}/link/",
+                                          {"patient": self.patient.id}, format="json").status_code, 404)
+        self.client.force_authenticate(self.doctor)
+        self.assertEqual(self.client.get(f"/api/records/patients/{self.anvar.id}/").status_code, 200)

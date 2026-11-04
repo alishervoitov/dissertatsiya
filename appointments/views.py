@@ -19,6 +19,7 @@ from .serializers import (
     DoctorProfileSerializer,
     DoctorQueueSerializer,
     DoctorTicketSerializer,
+    RegistryTicketSerializer,
     TakeTicketSerializer,
     TicketSerializer,
     doctor_name,
@@ -36,6 +37,11 @@ def _active_profiles():
 
 def _doctor_list():
     return [DoctorQueueSerializer(queue_state(p)).data for p in _active_profiles()]
+
+
+def _ticket_doctor_data(ticket):
+    """Registratura/shifokor ko'rinishidagi bitta chipta (ismi, bemor id si bilan)."""
+    return DoctorTicketSerializer((ticket, queue_state(ticket.doctor.doctor_profile))).data
 
 
 def _get_profile(doctor_id):
@@ -252,18 +258,22 @@ class RegistryTicketView(APIView):
         return Response(result)
 
     def post(self, request):
-        s = TakeTicketSerializer(data=request.data)
+        s = RegistryTicketSerializer(data=request.data)
         s.is_valid(raise_exception=True)
         profile = _get_profile(s.validated_data["doctor"])
+        patient = Patient.objects.select_related("user").filter(pk=s.validated_data["patient"]).first()
+        if not patient:
+            return Response({"detail": "Bemor topilmadi."}, status=status.HTTP_400_BAD_REQUEST)
         try:
-            ticket = issue_ticket(
-                profile, QueueTicket.SOURCE_REGISTRY,
-                visitor_name=s.validated_data.get("visitor_name", "").strip(),
-                issued_by=request.user, enforce_hours=False,
-            )
+            ticket = issue_ticket(profile, QueueTicket.SOURCE_REGISTRY, patient=patient,
+                                  issued_by=request.user, enforce_hours=False)
         except QueueError as exc:
             return _error(exc)
-        return Response(_ticket_data(ticket), status=status.HTTP_201_CREATED)
+        log_audit(request.user, "create", patient=patient,
+                  detail=f"Registratura navbati: №{ticket.number}, {doctor_name(profile.user)}")
+        data = _ticket_data(ticket)
+        data["patient_name"] = patient.user.get_full_name() or patient.user.username
+        return Response(data, status=status.HTTP_201_CREATED)
 
 
 # ---------- Kiosk (shifoxonadagi ekran, hisobsiz) ----------

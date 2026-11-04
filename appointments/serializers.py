@@ -107,3 +107,15 @@ class DoctorProfileSerializer(serializers.ModelSerializer):
 class TakeTicketSerializer(serializers.Serializer):
     doctor = serializers.IntegerField()
     visitor_name = serializers.CharField(max_length=100, required=False, allow_blank=True)
+
+
+class RegistryTicketSerializer(serializers.Serializer):
+    """Registratura chiptani faqat aniqlangan bemorga beradi: busiz kasallik varaqasi yuritilmaydi."""
+
+    doctor = serializers.IntegerField()
+    patient = serializers.IntegerField(required=False, allow_null=True)
+
+    def validate(self, attrs):
+        if not attrs.get("patient"):
+            raise serializers.ValidationError({"patient": "Bemorni tanlang yoki yangi bemor kartasini oching."})
+        return attrs

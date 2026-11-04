@@ -1,6 +1,6 @@
 from django.urls import path
 
-from . import views
+from . import registry, views
 
 urlpatterns = [
     path("doctors/", views.DoctorListView.as_view(), name="queue-doctors"),
@@ -16,6 +16,8 @@ urlpatterns = [
     path("doctor/settings/", views.DoctorSettingsView.as_view(), name="queue-doctor-settings"),
     path("doctors/<int:doctor_id>/profile/", views.AdminDoctorProfileView.as_view(), name="queue-admin-doctor-profile"),
     path("registry/", views.RegistryTicketView.as_view(), name="queue-registry"),
+    path("registry/patients/", registry.RegistryPatientView.as_view(), name="queue-registry-patients"),
+    path("registry/tickets/<int:pk>/link/", registry.RegistryLinkTicketView.as_view(), name="queue-registry-link"),
     path("kiosk/doctors/", views.KioskDoctorListView.as_view(), name="queue-kiosk-doctors"),
     path("kiosk/checkin-code/", views.KioskCheckinCodeView.as_view(), name="queue-kiosk-checkin-code"),
     path("checkin/", views.CheckinView.as_view(), name="queue-checkin"),

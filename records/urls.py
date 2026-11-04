@@ -12,6 +12,7 @@ urlpatterns = [
     path("audit-logs/verify/", views.AuditIntegrityView.as_view(), name="audit-log-verify"),
     path("consent/me/", views.MyConsentView.as_view(), name="my-consent"),
     path("consent/me/<int:pk>/revoke/", views.MyConsentRevokeView.as_view(), name="my-consent-revoke"),
+    path("patients/<int:patient_id>/photo/", views.PatientPhotoView.as_view(), name="patient-photo"),
     path("patients/<int:patient_id>/emergency-access/", views.EmergencyAccessView.as_view(), name="emergency-access"),
     path("access-log/me/", views.MyAccessLogView.as_view(), name="my-access-log"),
     path("export-anonymized/", views.AnonymizedExportView.as_view(), name="export-anonymized"),

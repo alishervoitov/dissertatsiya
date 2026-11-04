@@ -607,3 +607,84 @@ class EmergencyAccessView(APIView):
         access = consent.open_emergency(request.user, patient, reason)
         security_logger.warning("Favqulodda kirish: shifokor=%s bemor=%s", request.user.pk, patient.pk)
         return Response({"expires_at": access.expires_at}, status=status.HTTP_201_CREATED)
+
+
+class PatientPhotoView(APIView):
+    """Bemorning 3x4 rasmi.
+    GET    - kartani ko'ra oladiganlar (bemorning o'zi, roziligi bor shifokor, administrator).
+    POST   - multipart {photo, crop_x, crop_y, crop_w, crop_h}: registratura (admin) yoki bemorning o'zi.
+    DELETE - registratura (admin) yoki bemorning o'zi."""
+
+    throttle_scope = "patient_photo"
+
+    def _patient(self, patient_id):
+        return Patient.objects.filter(pk=patient_id).select_related("user").first()
+
+    def _can_edit(self, user, patient):
+        return user.role == Role.ADMIN or (user.role == Role.PATIENT and patient.user_id == user.id)
+
+    def get_throttles(self):
+        # Rasmni ko'rish cheklanmaydi; faqat yuklash/o'chirish
+        return super().get_throttles() if self.request.method != "GET" else []
+
+    def get(self, request, patient_id):
+        from django.http import HttpResponse
+
+        from .permissions import can_read_patient
+        from .photo import decode
+
+        patient = self._patient(patient_id)
+        if not patient:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+        if not can_read_patient(request.user, patient):
+            if request.user.role == Role.DOCTOR:
+                from .consent import deny
+                deny()
+            return Response(status=status.HTTP_403_FORBIDDEN)
+        from .models import PatientPhoto
+        photo = PatientPhoto.objects.filter(patient=patient).first()
+        data = decode(photo.image) if photo else None
+        if not data:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+        resp = HttpResponse(data, content_type="image/jpeg")
+        resp["Cache-Control"] = "private, no-store"
+        resp["X-Content-Type-Options"] = "nosniff"
+        return resp
+
+    def post(self, request, patient_id):
+        from django.utils import timezone
+
+        from .models import PatientPhoto
+        from .photo import PhotoError, encode, process_photo
+
+        patient = self._patient(patient_id)
+        if not patient:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+        if not self._can_edit(request.user, patient):
+            return Response({"detail": "Rasmni registratura yoki bemorning o'zi yuklaydi."}, status=status.HTTP_403_FORBIDDEN)
+        uploaded = request.FILES.get("photo")
+        if not uploaded:
+            return Response({"detail": "Rasm fayli topilmadi."}, status=status.HTTP_400_BAD_REQUEST)
+        crop = {k: request.data.get(f"crop_{k}") for k in ("x", "y", "w", "h")}
+        try:
+            data = process_photo(uploaded, crop)
+        except PhotoError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        now = timezone.now()
+        PatientPhoto.objects.update_or_create(
+            patient=patient, defaults={"image": encode(data), "uploaded_by": request.user, "updated_at": now})
+        log_audit(request.user, "update", patient=patient, detail="Bemor rasmi (3x4) yangilandi")
+        return Response({"photo_updated_at": now}, status=status.HTTP_201_CREATED)
+
+    def delete(self, request, patient_id):
+        from .models import PatientPhoto
+
+        patient = self._patient(patient_id)
+        if not patient:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+        if not self._can_edit(request.user, patient):
+            return Response(status=status.HTTP_403_FORBIDDEN)
+        deleted, _ = PatientPhoto.objects.filter(patient=patient).delete()
+        if deleted:
+            log_audit(request.user, "delete", patient=patient, detail="Bemor rasmi (3x4) o'chirildi")
+        return Response(status=status.HTTP_204_NO_CONTENT)

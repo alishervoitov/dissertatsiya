@@ -604,3 +604,112 @@ class PatientConsentTests(APITestCase):
         mig.backfill_existing_care(apps, None)
         pairs = set(CareGrant.objects.values_list("patient_id", "doctor_id"))
         self.assertEqual(pairs, {(self.patient.id, self.doctor2.id), (self.patient2.id, self.doctor.id)})
+
+
+class PatientPhotoTests(APITestCase):
+    """3x4 rasm: tekshirish, kesish, shifrlab saqlash va ruxsatlar."""
+
+    def setUp(self):
+        from django.core.cache import cache
+        cache.clear()
+        self.admin = User.objects.create_user(username="phadm", password="x", role=Role.ADMIN)
+        self.doctor = User.objects.create_user(username="phdoc", password="x", role=Role.DOCTOR)
+        self.lab = User.objects.create_user(username="phlab", password="x", role=Role.LAB)
+        self.pu = User.objects.create_user(username="phpat", password="x", role=Role.PATIENT)
+        self.patient = Patient.objects.get(user=self.pu)
+        self.other = User.objects.create_user(username="phpat2", password="x", role=Role.PATIENT)
+        self.url = f"/api/records/patients/{self.patient.id}/photo/"
+
+    def image(self, size=(1200, 900), fmt="JPEG", name="p.jpg", exif=True):
+        from io import BytesIO
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from PIL import Image
+        img = Image.new("RGB", size, (200, 30, 30))
+        img.paste((30, 30, 200), (size[0] // 2, 0, size[0], size[1]))      # o'ng yarmi ko'k
+        buf = BytesIO()
+        kw = {}
+        if exif and fmt == "JPEG":
+            ex = Image.Exif()
+            ex[0x010F] = "SecretPhone"           # Make
+            kw["exif"] = ex.tobytes()
+        img.save(buf, fmt, **kw)
+        return SimpleUploadedFile(name, buf.getvalue(), content_type=f"image/{fmt.lower()}")
+
+    def upload(self, user, **extra):
+        self.client.force_authenticate(user)
+        return self.client.post(self.url, {"photo": self.image(), **extra}, format="multipart")
+
+    def test_upload_crop_and_strip_metadata(self):
+        from io import BytesIO
+        from PIL import Image
+        r = self.upload(self.admin, crop_x=0.5, crop_y=0, crop_w=0.5, crop_h=1)   # faqat ko'k yarmi
+        self.assertEqual(r.status_code, 201, r.data)
+        got = self.client.get(self.url)
+        self.assertEqual((got.status_code, got["Content-Type"]), (200, "image/jpeg"))
+        self.assertIn("no-store", got["Cache-Control"])
+        img = Image.open(BytesIO(got.content))
+        self.assertEqual(img.size, (600, 800))
+        self.assertGreater(img.getpixel((300, 400))[2], 150)                     # ko'k qism kesib olingan
+        self.assertNotIn(b"SecretPhone", got.content)
+        self.assertFalse(img.getexif())
+        self.assertTrue(AuditLog.objects.filter(actor=self.admin, patient=self.patient,
+                                                detail="Bemor rasmi (3x4) yangilandi").exists())
+        self.assertIsNotNone(self.client.get(f"/api/records/patients/{self.patient.id}/").data["photo_updated_at"])
+
+    def test_encrypted_at_rest(self):
+        from django.db import connection
+        self.upload(self.pu)
+        with connection.cursor() as c:
+            c.execute("SELECT image FROM records_patientphoto WHERE patient_id=%s", [self.patient.id])
+            raw = c.fetchone()[0]
+        self.assertFalse(raw.startswith("/9j/"))                                  # JPEG base64 boshi ko'rinmaydi
+
+    def test_crop_box_always_3x4_inside_image(self):
+        from .photo import crop_box
+        for w, h, crop in [(1200, 900, None), (900, 1600, None), (1000, 1000, {"x": 0.9, "y": 0.9, "w": 0.5, "h": 0.5}),
+                           (800, 600, {"x": -1, "y": 2, "w": 9, "h": "x"})]:
+            l, t, r, b = crop_box(w, h, crop)
+            self.assertTrue(0 <= l < r <= w and 0 <= t < b <= h, (w, h, crop))
+            self.assertAlmostEqual((r - l) / (b - t), 0.75, delta=0.02)
+
+    def test_permissions(self):
+        self.upload(self.pu)
+        for user, code in [(self.admin, 200), (self.pu, 200), (self.lab, 403), (self.other, 403)]:
+            self.client.force_authenticate(user)
+            self.assertEqual(self.client.get(self.url).status_code, code, user.username)
+        self.client.force_authenticate(self.doctor)                                 # roziligisiz yopiq
+        r = self.client.get(self.url)
+        self.assertEqual((r.status_code, r.data["code"]), (403, "consent_required"))
+        CareGrant.objects.create(patient=self.patient, doctor=self.doctor)
+        self.assertEqual(self.client.get(self.url).status_code, 200)
+        for user in (self.doctor, self.other, self.lab):                            # yuklay olmaydi
+            self.assertEqual(self.upload(user).status_code, 403, user.username)
+
+    def test_bad_files(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        self.client.force_authenticate(self.pu)
+        r = self.client.post(self.url, {"photo": SimpleUploadedFile("x.jpg", b"not an image")}, format="multipart")
+        self.assertEqual(r.status_code, 400)
+        r = self.client.post(self.url, {"photo": self.image(name="p.gif")}, format="multipart")
+        self.assertEqual(r.status_code, 400)
+        r = self.client.post(self.url, {"photo": self.image(size=(60, 80))}, format="multipart")
+        self.assertIn("kichik", r.data["detail"])
+        self.assertEqual(self.client.post(self.url, {}, format="multipart").status_code, 400)
+        self.assertEqual(self.client.get(self.url).status_code, 404)
+
+    def test_delete(self):
+        self.upload(self.pu)
+        self.client.force_authenticate(self.other)
+        self.assertEqual(self.client.delete(self.url).status_code, 403)
+        self.client.force_authenticate(self.pu)
+        self.assertEqual(self.client.delete(self.url).status_code, 204)
+        self.assertEqual(self.client.get(self.url).status_code, 404)
+        self.assertTrue(AuditLog.objects.filter(action="delete", detail="Bemor rasmi (3x4) o'chirildi").exists())
+
+    def test_registry_search_shows_photo_time(self):
+        self.upload(self.pu)
+        self.pu.first_name = "Rasmli"
+        self.pu.save()
+        self.client.force_authenticate(self.admin)
+        rows = self.client.get("/api/queue/registry/patients/", {"q": "rasmli"}).data
+        self.assertIsNotNone(rows[0]["photo_updated_at"])

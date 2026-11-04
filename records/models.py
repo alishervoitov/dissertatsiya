@@ -284,3 +284,22 @@ class EmergencyAccess(models.Model):
 
     def __str__(self):
         return f"FAVQULODDA {self.doctor} -> {self.patient}"
+
+
+class PatientPhoto(models.Model):
+    """Bemorning 3x4 rasmi - registratura va shifokor shaxsni tasdiqlashi uchun.
+
+    Yuz tasviri shaxsiy ma'lumot: u /media/ da ochiq fayl bo'lib yotmaydi, balki
+    boshqa maxfiy maydonlar kabi Fernet bilan shifrlanib bazada saqlanadi. Shuning uchun
+    kalit almashtirish (rotate_encryption_key) va shifrlangan zaxira nusxa uni ham qamraydi.
+    Alohida jadval - bemorlar ro'yxati so'rovlari rasm baytlarini yuklamasin.
+    """
+
+    patient = models.OneToOneField(Patient, on_delete=models.CASCADE, related_name="photo")
+    image = EncryptedTextField(help_text="JPEG 600x800, base64")
+    uploaded_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True,
+                                    related_name="+")
+    updated_at = models.DateTimeField()
+
+    def __str__(self):
+        return f"Rasm: {self.patient}"

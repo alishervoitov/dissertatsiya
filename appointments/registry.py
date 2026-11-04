@@ -40,11 +40,18 @@ def patient_brief(p):
         "phone": u.phone,
         # Registraturada ochilgan va hali ilovaga kirmagan bemor
         "has_login": u.has_usable_password(),
+        # Registrator yuzini rasm bilan solishtirib, to'g'ri bemor tanlanganini tekshiradi
+        "photo_updated_at": getattr(p, "photo_updated_at", None),
     }
 
 
 def search_patients(q="", dob=None):
-    qs = Patient.objects.select_related("user").filter(user__is_active=True)
+    from django.db.models import OuterRef, Subquery
+
+    from records.models import PatientPhoto
+
+    qs = (Patient.objects.select_related("user").filter(user__is_active=True)
+          .annotate(photo_updated_at=Subquery(PatientPhoto.objects.filter(patient=OuterRef("pk")).values("updated_at")[:1])))
     words = [w for w in (q or "").split() if w]
     if not words and not dob:
         return Patient.objects.none()

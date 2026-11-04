@@ -8,13 +8,14 @@ class PatientSerializer(serializers.ModelSerializer):
     user = UserPublicSerializer(read_only=True)
     primary_doctor_name = serializers.SerializerMethodField()
     records_count = serializers.SerializerMethodField()
+    photo_updated_at = serializers.SerializerMethodField()
 
     class Meta:
         model = Patient
         fields = [
             "id", "user", "date_of_birth", "gender", "national_id", "address",
             "emergency_contact", "blood_type", "allergies", "primary_doctor",
-            "primary_doctor_name", "records_count", "created_at", "updated_at",
+            "primary_doctor_name", "records_count", "created_at", "updated_at", "photo_updated_at",
         ]
         read_only_fields = ["id", "created_at", "updated_at"]
 
@@ -23,6 +24,11 @@ class PatientSerializer(serializers.ModelSerializer):
 
     def get_records_count(self, obj):
         return obj.records.count()
+
+    def get_photo_updated_at(self, obj):
+        # Rasm baytlarini yuklamasdan faqat vaqtini olamiz (keshni yangilash uchun)
+        from .models import PatientPhoto
+        return PatientPhoto.objects.filter(patient_id=obj.pk).values_list("updated_at", flat=True).first()
 
 
 class PatientListSerializer(serializers.ModelSerializer):

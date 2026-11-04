@@ -163,6 +163,7 @@ REST_FRAMEWORK = {
         "checkin": "30/hour",
         "sessions": "60/hour",
         "emergency": "10/day",
+        "patient_photo": "30/hour",
         # 2FA: kod kiritish (har bir mfa_token ga qo'shimcha 5 urinish chegarasi bor) va sozlash
         "mfa": "10/min",
         "mfa_manage": "30/hour",

@@ -717,3 +717,44 @@ class PatientPhotoTests(APITestCase):
         self.client.force_authenticate(self.admin)
         rows = self.client.get("/api/queue/registry/patients/", {"q": "rasmli"}).data
         self.assertIsNotNone(rows[0]["photo_updated_at"])
+
+
+
+class PatientProfileEditRightsTests(APITestCase):
+    """Minimal huquq: shifokor - tibbiy maydonlar, admin - shaxsiy ma'lumotlar ham."""
+
+    def setUp(self):
+        self.doctor = User.objects.create_user(username="eddoc", password="x", role=Role.DOCTOR)
+        self.admin = User.objects.create_user(username="edadm", password="x", role=Role.ADMIN)
+        self.pu = User.objects.create_user(username="edpat", password="x", role=Role.PATIENT)
+        self.patient = Patient.objects.get(user=self.pu)
+        self.url = f"/api/records/patients/{self.patient.id}/"
+        CareGrant.objects.create(patient=self.patient, doctor=self.doctor)
+
+    def patch(self, user, data):
+        self.client.force_authenticate(user)
+        return self.client.patch(self.url, data, format="json")
+
+    def test_doctor_edits_medical_fields_only(self):
+        r = self.patch(self.doctor, {"allergies": "Penitsillin", "blood_type": "A+"})
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(AuditLog.objects.filter(actor=self.doctor,
+                                                detail="Bemor profili tahrirlandi: qon guruhi, allergiyalar").exists())
+        for field, value in [("national_id", "AA1234567"), ("address", "Toshkent"), ("date_of_birth", "1990-01-01"),
+                             ("gender", "F"), ("emergency_contact", "+998901112233"), ("primary_doctor", self.doctor.id)]:
+            r = self.patch(self.doctor, {"allergies": "x", field: value})
+            self.assertEqual((r.status_code, r.data["code"], r.data["fields"]), (403, "field_not_allowed", [field]), field)
+        self.patient.refresh_from_db()
+        self.assertEqual((self.patient.national_id, self.patient.allergies), ("", "Penitsillin"))
+
+    def test_admin_edits_everything_and_values_not_logged(self):
+        r = self.patch(self.admin, {"national_id": "AA1234567", "address": "Toshkent", "date_of_birth": "1990-01-01"})
+        self.assertEqual(r.status_code, 200)
+        log = AuditLog.objects.filter(actor=self.admin).latest("id")
+        self.assertIn("hujjat raqami", log.detail)
+        self.assertNotIn("AA1234567", log.detail)
+
+    def test_doctor_without_consent_and_patient_cannot_edit(self):
+        CareGrant.objects.all().delete()
+        self.assertEqual(self.patch(self.doctor, {"allergies": "x"}).data["code"], "consent_required")
+        self.assertEqual(self.patch(self.pu, {"allergies": "x"}).status_code, 403)

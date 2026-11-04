@@ -109,9 +109,34 @@ class PatientDetailView(generics.RetrieveUpdateAPIView):
             data["access"] = {"via": basis[0], "until": basis[1]} if basis else None
         return Response(data)
 
+    # Minimal huquq: shifokor faqat davolash uchun zarur tibbiy maydonlarni o'zgartiradi.
+    # Shaxsiy ma'lumotlar (tug'ilgan sana, jins, ID, manzil, telefon) - registratura (admin) ishi.
+    DOCTOR_EDITABLE = {"allergies", "blood_type"}
+    FIELD_LABELS = {
+        "date_of_birth": "tug'ilgan sana", "gender": "jins", "national_id": "hujjat raqami",
+        "address": "manzil", "emergency_contact": "favqulodda aloqa", "blood_type": "qon guruhi",
+        "allergies": "allergiyalar", "primary_doctor": "biriktirilgan shifokor",
+    }
+
+    def update(self, request, *args, **kwargs):
+        instance = self.get_object()            # rozilik tekshiruvi birinchi
+        if request.user.role == Role.DOCTOR:
+            extra = sorted(set(request.data.keys()) - self.DOCTOR_EDITABLE)
+            if extra:
+                return Response({"detail": "Shifokor faqat allergiya va qon guruhini o'zgartira oladi. "
+                                           "Shaxsiy ma'lumotlarni registratura tahrirlaydi.",
+                                 "code": "field_not_allowed", "fields": extra},
+                                status=status.HTTP_403_FORBIDDEN)
+        self._before = {f: getattr(instance, f) for f in self.FIELD_LABELS}
+        return super().update(request, *args, **kwargs)
+
     def perform_update(self, serializer):
         instance = serializer.save()
-        log_audit(self.request.user, "update", patient=instance, detail="Bemor profili tahrirlandi")
+        # Qiymatlar emas (ular maxfiy), faqat qaysi maydonlar o'zgargani yoziladi
+        changed = [label for f, label in self.FIELD_LABELS.items()
+                   if getattr(instance, f) != getattr(self, "_before", {}).get(f, getattr(instance, f))]
+        detail = "Bemor profili tahrirlandi" + (f": {', '.join(changed)}" if changed else "")
+        log_audit(self.request.user, "update", patient=instance, detail=detail)
 
 
 class MedicalRecordListCreateView(generics.ListCreateAPIView):

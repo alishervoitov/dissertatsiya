@@ -758,3 +758,40 @@ class PatientProfileEditRightsTests(APITestCase):
         CareGrant.objects.all().delete()
         self.assertEqual(self.patch(self.doctor, {"allergies": "x"}).data["code"], "consent_required")
         self.assertEqual(self.patch(self.pu, {"allergies": "x"}).status_code, 403)
+
+
+class ImportAvatarPhotosTests(APITestCase):
+    def test_copies_avatar_once_and_keeps_existing_photos(self):
+        from io import BytesIO, StringIO
+        from django.core.files.base import ContentFile
+        from django.core.management import call_command
+        from PIL import Image
+        from .models import PatientPhoto
+
+        def jpeg(size, color):
+            buf = BytesIO()
+            Image.new("RGB", size, color).save(buf, "JPEG")
+            return ContentFile(buf.getvalue())
+
+        a = User.objects.create_user(username="ava1", password="x", role=Role.PATIENT)
+        a.avatar.save("avatars/0123456789abcdef0123456789abcdef.jpg", jpeg((384, 512), (10, 200, 10)))
+        b = User.objects.create_user(username="ava2", password="x", role=Role.PATIENT)
+        b.avatar.save("avatars/fedcba9876543210fedcba9876543210.jpg", jpeg((512, 512), (0, 0, 0)))
+        PatientPhoto.objects.create(patient=Patient.objects.get(user=b), image="eA==", updated_at=timezone.now())
+        User.objects.create_user(username="ava3", password="x", role=Role.PATIENT)          # avatarsiz
+
+        out = StringIO()
+        call_command("import_avatar_photos", "--dry-run", stdout=out)
+        self.assertEqual(PatientPhoto.objects.count(), 1)
+        self.assertIn("1 ta bemor", out.getvalue())
+
+        call_command("import_avatar_photos", stdout=StringIO())
+        photo = PatientPhoto.objects.get(patient__user=a)
+        self.client.force_authenticate(a)
+        img = Image.open(BytesIO(self.client.get(f"/api/records/patients/{photo.patient_id}/photo/").content))
+        self.assertEqual(img.size, (600, 800))
+        self.assertGreater(img.getpixel((300, 400))[1], 150)
+        self.assertEqual(PatientPhoto.objects.get(patient__user=b).image, "eA==")             # ustidan yozilmadi
+        self.assertTrue(a.avatar.storage.exists(a.avatar.name))                              # avatar joyida
+        call_command("import_avatar_photos", stdout=StringIO())                               # qayta - hech narsa
+        self.assertEqual(PatientPhoto.objects.count(), 2)

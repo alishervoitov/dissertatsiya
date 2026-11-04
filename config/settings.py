@@ -302,6 +302,8 @@ MFA_REQUIRED_ROLES = tuple(r.strip() for r in os.environ.get("MFA_REQUIRED_ROLES
 MFA_ISSUER = os.environ.get("MFA_ISSUER", "ShifoSafe")
 # Django admin (/django-admin/): yoqilgan bo'lsa ham faqat parol + 2FA bilan kiriladi. 0 - butunlay o'chiq.
 DJANGO_ADMIN_ENABLED = os.environ.get("DJANGO_ADMIN_ENABLED", "1") == "1"
+# Pentest/sinov dalillari arxivi (archive_test_accounts). protected_media - docker volume, /media/ orqali ochiq emas.
+EVIDENCE_DIR = Path(os.environ.get("EVIDENCE_DIR", str(BASE_DIR / "protected_media" / "evidence")))
 
 SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": _td(minutes=15),

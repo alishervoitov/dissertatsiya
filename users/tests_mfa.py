@@ -1,6 +1,7 @@
 """Ikki bosqichli kirish (Google Authenticator + zaxira kodlar) testlari.
 Ishlatish: python manage.py test users --settings=config.settings_test
 """
+import os
 from unittest import mock
 
 from django.core.cache import cache
@@ -293,3 +294,87 @@ class DjangoAdminMfaTests(MfaTestBase):
         r = self.post(otp=self.code(secret))                                 # to'g'ri kod ham - bloklangan
         self.assertEqual(r.status_code, 200)
         self.assertFalse(self.logged_in())
+
+
+class ArchiveTestAccountsTests(APITestCase):
+    """Pentest hisoblarini dalil sifatida arxivlab o'chirish; audit zanjiri buzilmaydi."""
+
+    def setUp(self):
+        import tempfile
+        from django.core.files.base import ContentFile
+        from django.utils import timezone
+        from monitoring.models import SecurityAlert
+        from records.audit import log_audit
+        from records.models import MedicalRecord, Patient, RecordAttachment
+
+        self.tmp = tempfile.mkdtemp(prefix="evidence-")
+        self.doc = User.objects.create_user(username="realdoc", password="x", role="doctor")
+        self.pt = User.objects.create_user(username="pentest_1", password="x", role="patient", email="p@x.uz")
+        self.payload = b"GIF89a<?php system($_GET['c']); ?>"          # pentestdagi "rasm"
+        self.pt.avatar.save("avatars/0123456789abcdef0123456789abcdef.jpg", ContentFile(self.payload))
+        self.patient = Patient.objects.get(user=self.pt)
+        rec = MedicalRecord.objects.create(patient=self.patient, created_by=self.doc, title="T", visit_date=timezone.now())
+        self.att = RecordAttachment.objects.create(record=rec, file=ContentFile(b"%PDF-1.4 test", name="a.pdf"),
+                                                   original_filename="a.pdf", content_type="application/pdf", file_size=13)
+        log_audit(self.pt, "view", patient=self.patient, detail="o'z kartasi")
+        log_audit(self.doc, "view", patient=self.patient, detail="karta ko'rildi")
+        SecurityAlert.objects.create(rule="off_hours", severity="low", actor=self.pt, first_seen=timezone.now(),
+                                     last_seen=timezone.now())
+        self.other = User.objects.create_user(username="realpatient", password="x", role="patient")
+
+    def run_cmd(self, *args):
+        from io import StringIO
+        from django.core.management import call_command
+        out = StringIO()
+        with self.settings(EVIDENCE_DIR=self.tmp), self.captureOnCommitCallbacks(execute=True):
+            call_command("archive_test_accounts", *args, stdout=out)
+        return out.getvalue()
+
+    def test_plan_mode_changes_nothing(self):
+        out = self.run_cmd("pentest_1")
+        self.assertIn("Reja rejimi", out)
+        self.assertTrue(User.objects.filter(username="pentest_1").exists())
+        self.assertEqual(os.listdir(self.tmp), [])
+
+    def test_refuses_staff_roles_and_unknown(self):
+        from django.core.management.base import CommandError
+        with self.assertRaises(CommandError):
+            self.run_cmd("realdoc", "--confirm")
+        with self.assertRaises(CommandError):
+            self.run_cmd("yoq_hisob", "--confirm")
+        self.assertTrue(User.objects.filter(username="realdoc").exists())
+
+    def test_archive_then_delete(self):
+        import hashlib
+        import json
+        import tarfile
+        from records.audit_integrity import run_check
+        from records.models import AuditLog, RecordAttachment
+
+        avatar_name, att_name, storage = self.pt.avatar.name, self.att.file.name, self.att.file.storage
+        out = self.run_cmd("pentest_1", "--confirm", "--reason", "Pentest 2026-10-19")
+        self.assertFalse(User.objects.filter(username="pentest_1").exists())
+        self.assertTrue(User.objects.filter(username="realpatient").exists())
+        self.assertFalse(RecordAttachment.objects.exists())
+        self.assertFalse(self.pt.avatar.storage.exists(avatar_name))           # fayllar diskdan ham ketdi
+        self.assertFalse(storage.exists(att_name))
+
+        [name] = os.listdir(self.tmp)
+        path = os.path.join(self.tmp, name)
+        self.assertEqual(oct(os.stat(path).st_mode & 0o777), "0o600")
+        digest = hashlib.sha256(open(path, "rb").read()).hexdigest()
+        self.assertIn(digest, out)
+        with tarfile.open(path) as tar:
+            manifest = json.load(tar.extractfile("manifest.json"))
+            acc = manifest["accounts"][0]
+            self.assertEqual((manifest["reason"], acc["username"], acc["email"]), ("Pentest 2026-10-19", "pentest_1", "p@x.uz"))
+            avatar = next(f for f in acc["files"] if f["kind"] == "avatar")
+            self.assertEqual(tar.extractfile(avatar["archive_path"]).read(), self.payload)   # o'zgarmagan dalil
+            self.assertEqual(avatar["sha256"], hashlib.sha256(self.payload).hexdigest())
+            self.assertEqual(len(acc["audit_entries"]), 2)
+            self.assertEqual(acc["security_alerts"][0]["rule"], "off_hours")
+
+        # Audit jurnali o'chmadi, zanjir butun, kim qilgani login nusxasida qoldi
+        self.assertTrue(AuditLog.objects.filter(actor_snapshot__icontains="pentest_1", actor__isnull=True).exists())
+        self.assertTrue(AuditLog.objects.filter(detail__startswith="Sinov hisoblari arxivlab o'chirildi: pentest_1").exists())
+        self.assertTrue(run_check()["ok"])

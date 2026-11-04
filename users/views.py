@@ -82,6 +82,10 @@ class LoginView(TokenObtainPairView):
                 client_ident(request),
             )
             raise
+        if response.data.get("mfa_required"):
+            security_logger.info("Parol to'g'ri, 2FA kodi kutilmoqda: %r (IP: %s)",
+                                 request.data.get("username"), client_ident(request))
+            return response
         try:
             refresh = RefreshToken(response.data["refresh"])
             sessions.start_session(request, User.objects.get(pk=refresh["user_id"]), refresh)

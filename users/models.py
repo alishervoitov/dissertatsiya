@@ -2,6 +2,8 @@ from django.contrib.auth.models import AbstractUser
 from django.db import models
 from django.db.models.functions import Lower
 
+from records.encryption import EncryptedCharField
+
 
 class Role(models.TextChoices):
     ADMIN = "admin", "Administrator"
@@ -76,3 +78,30 @@ class LoginSession(models.Model):
 
     def __str__(self):
         return f"{self.user} {self.ip} ({'yopilgan' if self.revoked_at else 'faol'})"
+
+
+class TwoFactorDevice(models.Model):
+    """Google Authenticator (TOTP, RFC 6238) kaliti. Kalit shifrlangan holda saqlanadi:
+    baza o'g'irlansa ham undan kod yasab bo'lmaydi (FIELD_ENCRYPTION_KEY alohida)."""
+
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="two_factor")
+    secret = EncryptedCharField()
+    confirmed_at = models.DateTimeField(null=True, blank=True)
+    # Bir marta ishlatilgan kod (30 soniyalik qadam) qayta qabul qilinmaydi
+    last_step = models.BigIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"2FA: {self.user} ({'faol' if self.confirmed_at else 'sozlanmoqda'})"
+
+
+class BackupCode(models.Model):
+    """Telefon yo'qolganda kirish uchun bir martalik zaxira kod (faqat xeshi saqlanadi)."""
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="backup_codes")
+    code_hash = models.CharField(max_length=128)
+    used_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["user", "used_at"])]

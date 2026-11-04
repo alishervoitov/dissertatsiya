@@ -163,6 +163,9 @@ REST_FRAMEWORK = {
         "checkin": "30/hour",
         "sessions": "60/hour",
         "emergency": "10/day",
+        # 2FA: kod kiritish (har bir mfa_token ga qo'shimcha 5 urinish chegarasi bor) va sozlash
+        "mfa": "10/min",
+        "mfa_manage": "30/hour",
     },
     "DEFAULT_RENDERER_CLASSES": (
         "rest_framework.renderers.JSONRenderer",
@@ -292,6 +295,10 @@ AUDIT_HMAC_KEY = os.environ.get("AUDIT_HMAC_KEY", "")
 
 # JWT sozlamalari (logout tokenni qora ro'yxatga qo'shishi uchun token_blacklist ilovasi kerak)
 from datetime import timedelta as _td
+
+# Ikki bosqichli kirish (Google Authenticator) majburiy bo'lgan rollar. Bo'sh qoldirilsa - ixtiyoriy.
+MFA_REQUIRED_ROLES = tuple(r.strip() for r in os.environ.get("MFA_REQUIRED_ROLES", "admin,doctor").split(",") if r.strip())
+MFA_ISSUER = os.environ.get("MFA_ISSUER", "ShifoSafe")
 
 SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": _td(minutes=15),

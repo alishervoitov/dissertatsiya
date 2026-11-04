@@ -4,7 +4,8 @@ from django.db import transaction
 from rest_framework import serializers
 from rest_framework.exceptions import AuthenticationFailed
 from rest_framework.validators import UniqueValidator
-from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
+from django.contrib.auth.models import update_last_login
+from rest_framework_simplejwt.serializers import TokenObtainPairSerializer, TokenObtainSerializer
 
 from .models import Role, User
 from .security import (
@@ -164,7 +165,8 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
             raise AuthenticationFailed(LOGIN_FAILED_MESSAGE, code="login_failed")
 
         try:
-            data = super().validate(attrs)
+            # Faqat login/parol tekshiruvi; tokenlar 2FA kerak emasligi aniq bo'lgandan keyin yaratiladi
+            data = TokenObtainSerializer.validate(self, attrs)
         except AuthenticationFailed:
             if register_login_failure(username, ident):
                 security_logger.warning(
@@ -175,6 +177,15 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
 
         clear_login_failures(username, ident)
 
+        from . import mfa
+        if mfa.enabled_device(self.user):
+            # Parol to'g'ri, lekin tokenlar hali berilmaydi: ilovadagi kod yoki zaxira kod kerak
+            return {"mfa_required": True, "mfa_token": mfa.issue_login_token(self.user)}
+
+        refresh = self.get_token(self.user)
+        data["refresh"] = str(refresh)
+        data["access"] = str(refresh.access_token)
+        update_last_login(None, self.user)
         data["role"] = self.user.role
         data["user"] = UserPublicSerializer(self.user, context=self.context).data
         return data
@@ -183,10 +194,13 @@ class UserPublicSerializer(serializers.ModelSerializer):
     """Parolsiz, faqat ochiq profil ma'lumotlari."""
 
     avatar_url = serializers.SerializerMethodField()
+    mfa_enabled = serializers.BooleanField(source="is_active_2fa", read_only=True)
+    mfa_required = serializers.SerializerMethodField()
 
     class Meta:
         model = User
-        fields = ["id", "username", "first_name", "last_name", "email", "phone", "role", "avatar_url", "created_at"]
+        fields = ["id", "username", "first_name", "last_name", "email", "phone", "role", "avatar_url", "created_at",
+                  "mfa_enabled", "mfa_required"]
         read_only_fields = ["id", "role", "created_at"]
         # Admin PATCH orqali boshqa hisobning registr varianti nomiga o'tkazib bo'lmasin
         extra_kwargs = {"username": {"validators": CASE_INSENSITIVE_USERNAME_VALIDATORS}}
@@ -196,6 +210,10 @@ class UserPublicSerializer(serializers.ModelSerializer):
         if obj.avatar and request:
             return request.build_absolute_uri(obj.avatar.url)
         return None
+
+    def get_mfa_required(self, obj):
+        from .mfa import required_for
+        return required_for(obj)
 
 
 class AdminUserListSerializer(UserPublicSerializer):

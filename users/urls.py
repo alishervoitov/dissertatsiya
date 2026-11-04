@@ -1,10 +1,17 @@
 from django.urls import path
 
-from . import views
+from . import mfa_views, views
 
 urlpatterns = [
     path("register/", views.RegisterView.as_view(), name="register"),
     path("login/", views.LoginView.as_view(), name="login"),
+    path("login/2fa/", mfa_views.MfaLoginView.as_view(), name="login-2fa"),
+    path("2fa/", mfa_views.MfaStatusView.as_view(), name="mfa-status"),
+    path("2fa/setup/", mfa_views.MfaSetupView.as_view(), name="mfa-setup"),
+    path("2fa/confirm/", mfa_views.MfaConfirmView.as_view(), name="mfa-confirm"),
+    path("2fa/backup-codes/", mfa_views.MfaBackupCodesView.as_view(), name="mfa-backup-codes"),
+    path("2fa/disable/", mfa_views.MfaDisableView.as_view(), name="mfa-disable"),
+    path("users/<int:pk>/2fa/reset/", mfa_views.AdminMfaResetView.as_view(), name="admin-mfa-reset"),
     path("login/refresh/", views.SessionRefreshView.as_view(), name="login-refresh"),
     path("sessions/", views.SessionListView.as_view(), name="sessions"),
     path("sessions/<int:pk>/revoke/", views.SessionRevokeView.as_view(), name="session-revoke"),

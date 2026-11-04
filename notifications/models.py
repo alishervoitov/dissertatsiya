@@ -12,11 +12,13 @@ class Notification(models.Model):
     QUEUE_NEAR = "queue_near"
     QUEUE_CALLED = "queue_called"
     RX_EXPIRING = "rx_expiring"
+    EMERGENCY_ACCESS = "emergency_access"
     KINDS = [
         (LAB_READY, "Tahlil natijasi tayyor"),
         (QUEUE_NEAR, "Navbat yaqinlashdi"),
         (QUEUE_CALLED, "Navbat keldi"),
         (RX_EXPIRING, "Retsept muddati tugayapti"),
+        (EMERGENCY_ACCESS, "Kartangizga favqulodda kirildi"),
     ]
 
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="notifications")

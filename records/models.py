@@ -244,3 +244,43 @@ class Prescription(models.Model):
 
     def __str__(self):
         return f"{self.medication_name} - {self.patient} ({self.start_date})"
+
+
+class CareGrant(models.Model):
+    """Bemorning roziligi: shu shifokor kartamni ko'ra oladi (muddatli yoki muddatsiz).
+    Bemor istalgan vaqtda bekor qiladi; yozuv o'chirilmaydi, tarix saqlanadi."""
+
+    patient = models.ForeignKey(Patient, on_delete=models.CASCADE, related_name="care_grants")
+    doctor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="care_grants",
+                               limit_choices_to={"role": "doctor"})
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+                                   related_name="+")
+    note = models.CharField(max_length=100, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField(null=True, blank=True, help_text="Bo'sh - muddatsiz")
+    revoked_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [models.Index(fields=["doctor", "patient", "revoked_at"])]
+
+    def __str__(self):
+        return f"{self.patient} -> {self.doctor}"
+
+
+class EmergencyAccess(models.Model):
+    """Favqulodda kirish ("break-glass"): roziligi yo'q bemor kartasini shifokor sabab
+    yozib qisqa muddatga ochadi. O'zgartirilmaydi; administratorga ogohlantirish, bemorga xabar ketadi."""
+
+    patient = models.ForeignKey(Patient, on_delete=models.CASCADE, related_name="emergency_accesses")
+    doctor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="emergency_accesses")
+    reason = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [models.Index(fields=["doctor", "patient", "expires_at"])]
+
+    def __str__(self):
+        return f"FAVQULODDA {self.doctor} -> {self.patient}"

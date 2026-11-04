@@ -25,6 +25,8 @@ class LabBase(APITestCase):
         self.patient = Patient.objects.get(user=self.pat_user)
         self.pat2_user = User.objects.create_user(username="pat2", password="x", role=Role.PATIENT)
         self.patient2 = Patient.objects.get(user=self.pat2_user)
+        from records.models import CareGrant
+        CareGrant.objects.create(patient=self.patient, doctor=self.doctor)   # bemor roziligi
 
     def payload(self, patient=None, **extra):
         data = {

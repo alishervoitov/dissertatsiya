@@ -17,7 +17,10 @@ def can_read_result(user, result):
         return False
     if user.role == Role.PATIENT:
         return result.patient.user_id == user.id
-    return user.role in (Role.DOCTOR, Role.ADMIN, Role.LAB)
+    if user.role == Role.DOCTOR:
+        from records.consent import doctor_has_access
+        return doctor_has_access(user, result.patient_id)
+    return user.role in (Role.ADMIN, Role.LAB)
 
 
 def can_edit_result(user, result):

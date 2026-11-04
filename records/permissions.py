@@ -8,12 +8,15 @@ CLINICAL_ROLES = (Role.PATIENT, Role.DOCTOR, Role.ADMIN)
 
 
 def can_read_patient(user, patient):
-    """Bemorning klinik ma'lumotini o'qish: bemorning o'zi, shifokor yoki administrator."""
+    """Bemorning klinik ma'lumotini o'qish: bemorning o'zi, ROZILIGI bor shifokor yoki administrator."""
     if not user or not user.is_authenticated:
         return False
     if user.role == Role.PATIENT:
         return patient.user_id == user.id
-    return user.role in (Role.DOCTOR, Role.ADMIN)
+    if user.role == Role.DOCTOR:
+        from .consent import doctor_has_access
+        return doctor_has_access(user, patient)
+    return user.role == Role.ADMIN
 
 
 class PatientObjectPermission(BasePermission):
@@ -31,6 +34,8 @@ class PatientObjectPermission(BasePermission):
         if user.role == Role.PATIENT:
             return obj.user_id == user.id and request.method in SAFE_METHODS
         if user.role == Role.DOCTOR:
+            from .consent import require_access
+            require_access(user, obj)        # rozilik yo'q bo'lsa 403 (code=consent_required)
             return request.method in SAFE_METHODS or request.method in ("PUT", "PATCH")
         if user.role == Role.ADMIN:
             return True
@@ -59,6 +64,8 @@ class MedicalRecordObjectPermission(BasePermission):
         if user.role == Role.PATIENT:
             return obj.patient.user_id == user.id and request.method in SAFE_METHODS
         if user.role == Role.DOCTOR:
+            from .consent import require_access
+            require_access(user, obj.patient)
             if request.method in SAFE_METHODS:
                 return True
             return obj.created_by_id == user.id
@@ -89,6 +96,8 @@ class PrescriptionObjectPermission(BasePermission):
         if user.role == Role.PATIENT:
             return obj.patient.user_id == user.id and request.method in SAFE_METHODS
         if user.role == Role.DOCTOR:
+            from .consent import require_access
+            require_access(user, obj.patient)
             if request.method in SAFE_METHODS:
                 return True
             return obj.prescribed_by_id == user.id

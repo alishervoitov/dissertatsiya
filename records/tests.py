@@ -17,7 +17,7 @@ from rest_framework.test import APITestCase
 
 from users.models import Role, User
 
-from .models import AuditLog, MedicalRecord, Patient, Prescription
+from .models import AuditLog, CareGrant, EmergencyAccess, MedicalRecord, Patient, Prescription
 from .pdf_export import _text
 from .tasks import deactivate_expired_prescriptions
 
@@ -115,6 +115,7 @@ class PatientHistoryPDFTests(APITestCase):
         self.doctor = User.objects.create_user(username="pdfdoc", password="x", role=Role.DOCTOR)
         patient_user = User.objects.create_user(username="pdfpat", password="x", role=Role.PATIENT)
         self.patient = Patient.objects.get(user=patient_user)
+        CareGrant.objects.create(patient=self.patient, doctor=self.doctor)   # bemor roziligi
         self.client.force_authenticate(self.doctor)
 
     def record(self, **fields):
@@ -235,6 +236,7 @@ class RecordAttachmentTypeTests(APITestCase):
         pu = User.objects.create_user(username="atpat", password="x", role=Role.PATIENT)
         self.record = MedicalRecord.objects.create(patient=Patient.objects.get(user=pu), created_by=self.doctor,
                                                    title="T", visit_date=timezone.now())
+        CareGrant.objects.create(patient=self.record.patient, doctor=self.doctor)
         self.client.force_authenticate(self.doctor)
 
     def upload(self, name, data, ctype):
@@ -460,3 +462,145 @@ class EncryptionKeyRotationTests(TestCase):
         with override_settings(FIELD_ENCRYPTION_KEY=f"{self.NEW},notakey"):
             with self.assertRaises(CommandError):
                 self.run_cmd("--check")
+
+
+
+class PatientConsentTests(APITestCase):
+    """Bemor roziligi: shifokor faqat ruxsat, bugungi navbat yoki favqulodda kirish bilan kartani ko'radi."""
+
+    def setUp(self):
+        from django.core.cache import cache
+        cache.clear()
+        self.doctor = User.objects.create_user(username="cdoc", password="x", role=Role.DOCTOR, first_name="Sardor")
+        self.doctor2 = User.objects.create_user(username="cdoc2", password="x", role=Role.DOCTOR)
+        self.pu = User.objects.create_user(username="cpat", password="x", role=Role.PATIENT, first_name="Anvar")
+        self.patient = Patient.objects.get(user=self.pu)
+        self.pu2 = User.objects.create_user(username="cpat2", password="x", role=Role.PATIENT, first_name="Anora")
+        self.patient2 = Patient.objects.get(user=self.pu2)
+        self.patient.blood_type = "A+"
+        self.patient.save()
+        self.record = MedicalRecord.objects.create(patient=self.patient, created_by=self.doctor2, title="T",
+                                                   diagnosis="Maxfiy", visit_date=timezone.now())
+        self.admin = User.objects.create_user(username="cadm", password="x", role=Role.ADMIN)
+
+    def as_doc(self, d=None):
+        self.client.force_authenticate(d or self.doctor)
+
+    def closed_everywhere(self):
+        """Shifokorga bemorning barcha klinik nuqtalari yopiqmi."""
+        self.as_doc()
+        p = self.patient.id
+        r = self.client.get(f"/api/records/patients/{p}/")
+        self.assertEqual((r.status_code, r.data.get("code")), (403, "consent_required"))
+        self.assertEqual(self.client.get(f"/api/records/medical-records/?patient={p}").status_code, 403)
+        self.assertEqual(self.client.get(f"/api/records/medical-records/{self.record.id}/").status_code, 403)
+        self.assertEqual(self.client.get("/api/records/medical-records/").data, [])
+        self.assertEqual(self.client.get(f"/api/records/prescriptions/?patient={p}").status_code, 403)
+        self.assertEqual(self.client.get(f"/api/records/patients/{p}/history-pdf/").status_code, 403)
+        self.assertEqual(self.client.get(f"/api/labs/results/?patient={p}").status_code, 403)
+        self.assertEqual(self.client.post("/api/records/medical-records/", {
+            "patient": p, "title": "X", "visit_date": timezone.now().isoformat()}, format="json").status_code, 403)
+
+    def opened(self):
+        self.as_doc()
+        self.assertEqual(self.client.get(f"/api/records/patients/{self.patient.id}/").status_code, 200)
+        self.assertEqual(len(self.client.get(f"/api/records/medical-records/?patient={self.patient.id}").data), 1)
+
+    def test_no_consent_no_access(self):
+        self.closed_everywhere()
+
+    def test_admin_and_patient_unaffected(self):
+        self.client.force_authenticate(self.admin)
+        self.assertEqual(self.client.get(f"/api/records/patients/{self.patient.id}/").status_code, 200)
+        self.client.force_authenticate(self.pu)
+        self.assertEqual(self.client.get(f"/api/records/patients/{self.patient.id}/").status_code, 200)
+
+    def test_patient_grants_and_revokes(self):
+        self.client.force_authenticate(self.pu)
+        r = self.client.post("/api/records/consent/me/", {"doctor": self.doctor.id, "days": 7}, format="json")
+        self.assertEqual(r.status_code, 201)
+        self.opened()
+        self.client.force_authenticate(self.pu2)                  # boshqa bemor bekor qila olmaydi
+        self.assertEqual(self.client.post(f"/api/records/consent/me/{r.data['id']}/revoke/").status_code, 404)
+        self.client.force_authenticate(self.pu)
+        data = self.client.get("/api/records/consent/me/").data
+        self.assertEqual(data["grants"][0]["doctor"]["name"], "Sardor")
+        self.client.post(f"/api/records/consent/me/{r.data['id']}/revoke/")
+        self.closed_everywhere()
+        self.assertTrue(AuditLog.objects.filter(actor=self.pu, detail__startswith="Ruxsat bekor").exists())
+
+    def test_grant_expires(self):
+        from datetime import timedelta
+        from unittest import mock
+        self.client.force_authenticate(self.pu)
+        self.client.post("/api/records/consent/me/", {"doctor": self.doctor.id, "days": 1}, format="json")
+        self.opened()
+        later = timezone.now() + timedelta(days=1, minutes=1)
+        with mock.patch("django.utils.timezone.now", return_value=later):
+            self.closed_everywhere()
+
+    def test_bad_grant_input(self):
+        self.client.force_authenticate(self.pu)
+        self.assertEqual(self.client.post("/api/records/consent/me/", {"doctor": self.admin.id}, format="json").status_code, 400)
+        self.assertEqual(self.client.post("/api/records/consent/me/", {"doctor": self.doctor.id, "days": 999}, format="json").status_code, 400)
+        self.as_doc()
+        self.assertEqual(self.client.post("/api/records/consent/me/", {"doctor": self.doctor.id}, format="json").status_code, 403)
+
+    def test_todays_queue_ticket_gives_access(self):
+        from appointments.models import DoctorProfile, QueueTicket
+        from appointments.services import today
+        DoctorProfile.objects.get_or_create(user=self.doctor)
+        t = QueueTicket.objects.create(doctor=self.doctor, date=today(), number=1, source="online", patient=self.patient)
+        self.opened()
+        t.status = QueueTicket.CANCELLED
+        t.save()
+        self.closed_everywhere()
+
+    def test_patient_list_for_doctor(self):
+        CareGrant.objects.create(patient=self.patient2, doctor=self.doctor)
+        self.as_doc()
+        rows = self.client.get("/api/records/patients/").data
+        self.assertEqual([r["id"] for r in rows], [self.patient2.id])            # faqat ruxsati borlar
+        self.assertEqual(rows[0]["access_via"], "grant")
+        rows = {r["id"]: r for r in self.client.get("/api/records/patients/", {"search": "cpat"}).data}
+        self.assertFalse(rows[self.patient.id]["has_access"])
+        self.assertNotIn("blood_type", rows[self.patient.id])                     # klinik maydon yo'q
+        self.assertTrue(rows[self.patient2.id]["has_access"])
+
+    def test_emergency_access(self):
+        from datetime import timedelta
+        from unittest import mock
+        from monitoring.models import SecurityAlert
+        from notifications.models import Notification
+        self.as_doc()
+        url = f"/api/records/patients/{self.patient.id}/emergency-access/"
+        r = self.client.post(url, {"reason": "qisqa"}, format="json")
+        self.assertEqual((r.status_code, r.data["code"]), (400, "reason_too_short"))
+        r = self.client.post(url, {"reason": "Bemor hushsiz holatda keltirildi, allergiyalarni bilish zarur"}, format="json")
+        self.assertEqual(r.status_code, 201)
+        self.opened()
+        self.assertEqual(self.client.get(f"/api/records/patients/{self.patient.id}/").data["access"]["via"], "emergency")
+        self.assertTrue(AuditLog.objects.filter(actor=self.doctor, detail__startswith="FAVQULODDA KIRISH").exists())
+        self.assertEqual(SecurityAlert.objects.filter(rule="emergency_access", actor=self.doctor, severity="high").count(), 1)
+        n = Notification.objects.get(user=self.pu, kind="emergency_access")
+        self.assertEqual(n.params["doctor"], "Sardor")
+        self.client.force_authenticate(self.pu)
+        self.assertTrue(self.client.get("/api/records/consent/me/").data["emergencies"][0]["active"])
+        with mock.patch("django.utils.timezone.now", return_value=timezone.now() + timedelta(minutes=61)):
+            self.closed_everywhere()
+        self.client.force_authenticate(self.pu)                                   # bemor ishlata olmaydi
+        self.assertEqual(self.client.post(url, {"reason": "x" * 30}, format="json").status_code, 403)
+
+    @override_settings(PATIENT_CONSENT_REQUIRED=False)
+    def test_setting_disables_consent(self):
+        self.opened()
+
+    def test_migration_backfills_existing_care(self):
+        import importlib
+        from django.apps import apps
+        mig = importlib.import_module("records.migrations.0007_patient_consent")
+        Prescription.objects.create(patient=self.patient2, prescribed_by=self.doctor, medication_name="D",
+                                    dosage="1", duration_days=3, start_date=timezone.now().date())
+        mig.backfill_existing_care(apps, None)
+        pairs = set(CareGrant.objects.values_list("patient_id", "doctor_id"))
+        self.assertEqual(pairs, {(self.patient.id, self.doctor2.id), (self.patient2.id, self.doctor.id)})

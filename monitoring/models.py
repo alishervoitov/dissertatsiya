@@ -12,11 +12,13 @@ class SecurityAlert(models.Model):
     OFF_HOURS = "off_hours"
     BULK_EXPORT = "bulk_export"
     AUDIT_TAMPER = "audit_tamper"
+    EMERGENCY_ACCESS = "emergency_access"
     RULES = [
         (MASS_ACCESS, "Qisqa vaqtda ko'p bemor kartasi ochildi"),
         (OFF_HOURS, "Ish vaqtidan tashqari murojaat"),
         (BULK_EXPORT, "Ko'p PDF eksport"),
         (AUDIT_TAMPER, "Audit jurnali yaxlitligi buzilgan"),
+        (EMERGENCY_ACCESS, "Favqulodda kirish (bemor roziligisiz)"),
     ]
     SEVERITIES = [("low", "Past"), ("medium", "O'rta"), ("high", "Yuqori")]
     OPEN, ACKED = "open", "acknowledged"

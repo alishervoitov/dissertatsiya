@@ -162,6 +162,7 @@ REST_FRAMEWORK = {
         "kiosk": "300/hour",
         "checkin": "30/hour",
         "sessions": "60/hour",
+        "emergency": "10/day",
     },
     "DEFAULT_RENDERER_CLASSES": (
         "rest_framework.renderers.JSONRenderer",
@@ -279,6 +280,10 @@ CELERY_BEAT_SCHEDULE = {
         "schedule": crontab(hour=21, minute=10),  # har kuni 21:10 UTC (Toshkent 02:10)
     },
 }
+
+# Bemor roziligi: shifokor faqat ruxsat bergan, bugun navbatida turgan yoki favqulodda kirgan
+# bemor kartasini ko'radi (records/consent.py). 0 - eski tartib (shifokor hamma bemorni ko'radi).
+PATIENT_CONSENT_REQUIRED = os.environ.get("PATIENT_CONSENT_REQUIRED", "1") == "1"
 
 # Audit jurnali xesh zanjiri kaliti. Bo'sh bo'lsa SECRET_KEY dan olinadi.
 # Diqqat: kalit (yoki SECRET_KEY) almashtirilsa eski yozuvlar tekshiruvdan o'tmaydi.

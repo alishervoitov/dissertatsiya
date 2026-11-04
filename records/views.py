@@ -50,6 +50,30 @@ class PatientListView(generics.ListAPIView):
             ) | qs.filter(user__username__icontains=search)
         return qs.order_by("user__first_name")
 
+    def list(self, request, *args, **kwargs):
+        from . import consent
+        if request.user.role != Role.DOCTOR or not consent.consent_required():
+            return super().list(request, *args, **kwargs)
+        # Shifokor: qidiruvsiz - faqat ruxsati bor bemorlar; qidiruvda - topilganlar (ko'pi bilan 20 ta),
+        # ruxsati yo'qlari uchun faqat tanib olishga yetadigan minimum (ism, login, tug'ilgan sana)
+        search = request.query_params.get("search")
+        qs = self.get_queryset()
+        if not search:
+            qs = qs.filter(id__in=consent.accessible_patient_ids(request.user))
+        patients = list(qs[:20] if search else qs)
+        access = consent.access_map(request.user, [p.id for p in patients])
+        data = []
+        for p in patients:
+            basis = access.get(p.id)
+            if basis:
+                row = PatientListSerializer(p).data
+                row.update(has_access=True, access_via=basis[0], access_until=basis[1])
+            else:
+                row = {"id": p.id, "full_name": p.user.get_full_name(), "username": p.user.username,
+                       "date_of_birth": p.date_of_birth, "has_access": False}
+            data.append(row)
+        return Response(data)
+
 class MyPatientProfileView(APIView):
     """Bemorning o'zi tizimga kirganda o'z profilini ko'rishi uchun qisqa yo'l."""
 
@@ -77,8 +101,13 @@ class PatientDetailView(generics.RetrieveUpdateAPIView):
         actor = request.user
         detail = "O'z profili" if actor.role == Role.PATIENT else "Bemor kartasi ko'rildi"
         log_audit(actor, "view", patient=instance, detail=detail)
-        serializer = self.get_serializer(instance)
-        return Response(serializer.data)
+        data = self.get_serializer(instance).data
+        if actor.role == Role.DOCTOR:
+            # Shifokor qaysi asosda ko'rayotganini biladi (favqulodda kirish muddati tugashini ham)
+            from . import consent
+            basis = consent.access_map(actor, [instance.id]).get(instance.id) if consent.consent_required() else None
+            data["access"] = {"via": basis[0], "until": basis[1]} if basis else None
+        return Response(data)
 
     def perform_update(self, serializer):
         instance = serializer.save()
@@ -96,7 +125,13 @@ class MedicalRecordListCreateView(generics.ListCreateAPIView):
         if user.role == Role.PATIENT:
             qs = qs.filter(patient__user=user)
         elif user.role == Role.DOCTOR:
-            pass  # shifokor davolash uchun barcha bemorlar yozuvlarini ko'ra oladi
+            # Shifokor faqat roziligi bor (ruxsat, bugungi navbat yoki favqulodda) bemorlar yozuvlarini ko'radi
+            from . import consent
+            if consent.consent_required():
+                pid = self.request.query_params.get("patient")
+                if pid and str(pid).isdigit() and not consent.doctor_has_access(user, int(pid)):
+                    consent.deny()
+                qs = qs.filter(patient_id__in=consent.accessible_patient_ids(user))
         elif user.role == Role.ADMIN:
             pass  # administrator nazorat uchun ko'ra oladi (faqat o'qish)
         else:
@@ -108,6 +143,8 @@ class MedicalRecordListCreateView(generics.ListCreateAPIView):
         return qs.order_by("-visit_date")
 
     def perform_create(self, serializer):
+        from .consent import require_access
+        require_access(self.request.user, serializer.validated_data["patient"])
         record = serializer.save(created_by=self.request.user)
         log_audit(
             self.request.user, "create", patient=record.patient, medical_record=record,
@@ -241,6 +278,8 @@ class PatientHistoryPDFView(APIView):
 
         # Ruxsat tekshiruvi: bemor faqat o'zinikini, shifokor/admin istalganini, boshqa rollar hech birini
         user = request.user
+        from .consent import require_access
+        require_access(user, patient)
         if not can_read_patient(user, patient):
             return Response({"detail": "Ruxsat berilmagan."}, status=status.HTTP_403_FORBIDDEN)
 
@@ -386,7 +425,14 @@ class PrescriptionListCreateView(generics.ListCreateAPIView):
 
         if user.role == Role.PATIENT:
             qs = qs.filter(patient__user=user)
-        elif user.role not in (Role.DOCTOR, Role.ADMIN):
+        elif user.role == Role.DOCTOR:
+            from . import consent
+            if consent.consent_required():
+                pid = self.request.query_params.get("patient")
+                if pid and str(pid).isdigit() and not consent.doctor_has_access(user, int(pid)):
+                    consent.deny()
+                qs = qs.filter(patient_id__in=consent.accessible_patient_ids(user))
+        elif user.role != Role.ADMIN:
             qs = qs.none()
 
         patient_id = self.request.query_params.get("patient")
@@ -395,6 +441,8 @@ class PrescriptionListCreateView(generics.ListCreateAPIView):
         return qs.order_by("-start_date")
 
     def perform_create(self, serializer):
+        from .consent import require_access
+        require_access(self.request.user, serializer.validated_data["patient"])
         prescription = serializer.save(prescribed_by=self.request.user)
         log_audit(
             self.request.user, "create", patient=prescription.patient,
@@ -451,3 +499,111 @@ class MyAccessLogView(APIView):
             "results": PatientAccessLogSerializer(rows, many=True).data,
             "summary": {"people": len(people), "events": len(rows)},
         })
+
+
+# ---------- Bemor roziligi va favqulodda kirish ----------
+
+def _doctor_brief(u):
+    profile = getattr(u, "doctor_profile", None)
+    return {"id": u.id, "name": u.get_full_name() or u.username,
+            "specialty": getattr(profile, "specialty", "") or ""}
+
+
+class MyConsentView(APIView):
+    """Bemor: kimga ruxsat berganini ko'radi va yangi ruxsat beradi.
+    POST {doctor: id, days: 1|7|30|null}"""
+
+    permission_classes = [IsPatient]
+    DURATIONS = (1, 7, 30)
+
+    def _patient(self, request):
+        return Patient.objects.get(user=request.user)
+
+    def get(self, request):
+        from django.db.models import Q
+        from django.utils import timezone
+
+        from appointments.models import QueueTicket
+        from appointments.services import today
+        from .models import CareGrant, EmergencyAccess
+
+        patient = self._patient(request)
+        now = timezone.now()
+        grants = (CareGrant.objects.filter(patient=patient, revoked_at__isnull=True)
+                  .filter(Q(expires_at__isnull=True) | Q(expires_at__gt=now))
+                  .select_related("doctor__doctor_profile"))
+        visits = (QueueTicket.objects.filter(patient=patient, date=today(), status__in=("waiting", "called", "done"))
+                  .select_related("doctor__doctor_profile"))
+        emergencies = EmergencyAccess.objects.filter(patient=patient).select_related("doctor__doctor_profile")[:20]
+        return Response({
+            "grants": [{"id": g.id, "doctor": _doctor_brief(g.doctor), "created_at": g.created_at,
+                        "expires_at": g.expires_at, "note": g.note} for g in grants],
+            "visits_today": [_doctor_brief(t.doctor) for t in visits],
+            "emergencies": [{"id": e.id, "doctor": _doctor_brief(e.doctor), "reason": e.reason,
+                             "created_at": e.created_at, "expires_at": e.expires_at,
+                             "active": e.expires_at > now} for e in emergencies],
+        })
+
+    def post(self, request):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from users.models import User
+        from .models import CareGrant
+
+        patient = self._patient(request)
+        doctor = User.objects.filter(pk=request.data.get("doctor"), role=Role.DOCTOR, is_active=True).first()
+        if not doctor:
+            return Response({"detail": "Shifokor topilmadi."}, status=status.HTTP_400_BAD_REQUEST)
+        days = request.data.get("days")
+        if days not in (None, "", *self.DURATIONS, *map(str, self.DURATIONS)):
+            return Response({"detail": "Muddat noto'g'ri."}, status=status.HTTP_400_BAD_REQUEST)
+        expires = timezone.now() + timedelta(days=int(days)) if days not in (None, "") else None
+        # Shu shifokorga oldingi faol ruxsat yangisi bilan almashtiriladi
+        CareGrant.objects.filter(patient=patient, doctor=doctor, revoked_at__isnull=True).update(revoked_at=timezone.now())
+        grant = CareGrant.objects.create(patient=patient, doctor=doctor, created_by=request.user, expires_at=expires)
+        log_audit(request.user, "update", patient=patient,
+                  detail=f"Ruxsat berildi: {doctor.get_full_name() or doctor.username} "
+                         f"({'muddatsiz' if expires is None else f'{days} kun'})")
+        return Response({"id": grant.id}, status=status.HTTP_201_CREATED)
+
+
+class MyConsentRevokeView(APIView):
+    permission_classes = [IsPatient]
+
+    def post(self, request, pk):
+        from django.utils import timezone
+
+        from .models import CareGrant
+
+        grant = CareGrant.objects.filter(pk=pk, patient__user=request.user, revoked_at__isnull=True).select_related("doctor").first()
+        if not grant:
+            return Response({"detail": "Ruxsat topilmadi."}, status=status.HTTP_404_NOT_FOUND)
+        grant.revoked_at = timezone.now()
+        grant.save(update_fields=["revoked_at"])
+        log_audit(request.user, "update", patient=grant.patient,
+                  detail=f"Ruxsat bekor qilindi: {grant.doctor.get_full_name() or grant.doctor.username}")
+        return Response({"revoked": True})
+
+
+class EmergencyAccessView(APIView):
+    """Shifokor: roziligi yo'q bemor kartasini favqulodda ochish. POST {reason}"""
+
+    throttle_scope = "emergency"
+
+    def post(self, request, patient_id):
+        from . import consent
+
+        if request.user.role != Role.DOCTOR:
+            return Response({"detail": "Faqat shifokor uchun."}, status=status.HTTP_403_FORBIDDEN)
+        patient = Patient.objects.filter(pk=patient_id).select_related("user").first()
+        if not patient:
+            return Response({"detail": "Bemor topilmadi."}, status=status.HTTP_404_NOT_FOUND)
+        reason = " ".join(str(request.data.get("reason", "")).split())[:500]
+        if len(reason) < consent.EMERGENCY_MIN_REASON:
+            return Response({"detail": f"Sababni batafsil yozing (kamida {consent.EMERGENCY_MIN_REASON} belgi).",
+                             "code": "reason_too_short"}, status=status.HTTP_400_BAD_REQUEST)
+        access = consent.open_emergency(request.user, patient, reason)
+        security_logger.warning("Favqulodda kirish: shifokor=%s bemor=%s", request.user.pk, patient.pk)
+        return Response({"expires_at": access.expires_at}, status=status.HTTP_201_CREATED)

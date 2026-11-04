@@ -51,6 +51,9 @@ class LabResultListCreateView(APIView):
         elif user.role in (Role.DOCTOR, Role.ADMIN):
             if not patient_id:
                 return Response({"detail": "patient parametri kerak."}, status=status.HTTP_400_BAD_REQUEST)
+            if user.role == Role.DOCTOR:
+                from records.consent import require_access
+                require_access(user, int(patient_id) if str(patient_id).isdigit() else -1)
             qs = qs.filter(patient_id=patient_id)
         elif user.role == Role.LAB:
             qs = qs.filter(patient_id=patient_id) if patient_id else qs.filter(created_by=user)[:50]

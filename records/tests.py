@@ -680,9 +680,13 @@ class PatientPhotoTests(APITestCase):
         self.client.force_authenticate(self.doctor)                                 # roziligisiz yopiq
         r = self.client.get(self.url)
         self.assertEqual((r.status_code, r.data["code"]), (403, "consent_required"))
+        self.assertEqual(self.upload(self.doctor).status_code, 403)                 # roziligisiz yuklay olmaydi
         CareGrant.objects.create(patient=self.patient, doctor=self.doctor)
         self.assertEqual(self.client.get(self.url).status_code, 200)
-        for user in (self.doctor, self.other, self.lab):                            # yuklay olmaydi
+        self.assertEqual(self.upload(self.doctor).status_code, 201)                 # davolovchi shifokor rasmga oladi
+        self.client.force_authenticate(self.doctor)
+        self.assertEqual(self.client.delete(self.url).status_code, 403)             # o'chira olmaydi
+        for user in (self.other, self.lab):
             self.assertEqual(self.upload(user).status_code, 403, user.username)
 
     def test_bad_files(self):

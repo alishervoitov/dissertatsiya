@@ -39,6 +39,8 @@ def patient_brief(p):
         "date_of_birth": p.date_of_birth,
         "gender": p.gender,
         "phone": u.phone,
+        # Hujjatning oxirgi 4 raqami - registrator bemordan so'rab solishtiradi (S8)
+        "id_last4": p.national_id_last4,
         # Registraturada ochilgan va hali ilovaga kirmagan bemor
         "has_login": u.has_usable_password() and not u.must_change_password,
         # Vaqtinchalik parol berilgan, bemor hali o'z parolini o'rnatmagan
@@ -63,6 +65,8 @@ def search_patients(q="", dob=None):
         cond = Q(user__first_name__icontains=w) | Q(user__last_name__icontains=w) | Q(user__username__icontains=w)
         if len(digits) >= 4:
             cond |= Q(user__phone__icontains=digits)
+        if re.fullmatch(r"\d{4}", w):
+            cond |= Q(national_id_last4=w)
         qs = qs.filter(cond)
     if dob:
         qs = qs.filter(date_of_birth=dob)
@@ -75,6 +79,7 @@ class NewPatientSerializer(serializers.Serializer):
     date_of_birth = serializers.DateField()
     phone = serializers.CharField(max_length=20, required=False, allow_blank=True)
     gender = serializers.ChoiceField(choices=["M", "F", ""], required=False, allow_blank=True)
+    national_id = serializers.CharField(max_length=30, required=False, allow_blank=True)
     confirm = serializers.BooleanField(required=False, default=False)
 
     def validate_first_name(self, v):
@@ -95,6 +100,25 @@ class NewPatientSerializer(serializers.Serializer):
         if v > today() or v.year < 1900:
             raise serializers.ValidationError("Tug'ilgan sana noto'g'ri.")
         return v
+
+
+NO_PHOTO_MIN = 5
+
+
+def photo_gate(request, patient):
+    """S8: rasmi yo'q bemorga chipta berishdan oldin rasm olinadi (yuz bilan solishtirish uchun).
+    Kamera ishlamasa yoki bemor rozi bo'lmasa - registrator sababini yozadi, u auditga tushadi.
+    Natija: (xato javobi yoki None, auditga qo'shiladigan izoh)."""
+    from records.models import PatientPhoto
+
+    if PatientPhoto.objects.filter(patient=patient).exists():
+        return None, ""
+    reason = " ".join(str(request.data.get("no_photo_reason") or "").split())[:120]
+    if len(reason) < NO_PHOTO_MIN:
+        return Response({"detail": "Bemorning rasmi yo'q. Shaxsni tasdiqlash uchun avval rasm oling "
+                                   "yoki rasmsiz berish sababini yozing.", "code": "photo_required"},
+                        status=status.HTTP_409_CONFLICT), ""
+    return None, f"; rasmsiz: {reason}"
 
 
 def _new_username():
@@ -141,7 +165,8 @@ class RegistryPatientView(APIView):
             patient = Patient.objects.get(user=user)
             patient.date_of_birth = d["date_of_birth"]
             patient.gender = d.get("gender", "")
-            patient.save(update_fields=["date_of_birth", "gender"])
+            patient.national_id = " ".join(d.get("national_id", "").split()).upper()
+            patient.save(update_fields=["date_of_birth", "gender", "national_id"])
         log_audit(request.user, "create", patient=patient, detail="Registraturada yangi bemor kartasi ochildi")
         return Response(patient_brief(patient), status=status.HTTP_201_CREATED)
 
@@ -157,6 +182,9 @@ class RegistryLinkTicketView(APIView):
         patient = Patient.objects.select_related("user").filter(pk=request.data.get("patient")).first()
         if not patient:
             return Response({"detail": "Bemor topilmadi."}, status=status.HTTP_400_BAD_REQUEST)
+        blocked, no_photo = photo_gate(request, patient)
+        if blocked:
+            return blocked
         with transaction.atomic():
             ticket = (QueueTicket.objects.select_for_update()
                       .filter(pk=pk, date=today(), status__in=LINKABLE).first())
@@ -177,7 +205,7 @@ class RegistryLinkTicketView(APIView):
             ticket.save(update_fields=["patient", "visitor_name"])
         doctor = ticket.doctor.get_full_name() or ticket.doctor.username
         log_audit(request.user, "update", patient=patient,
-                  detail=f"Navbat chiptasi bemorga bog'landi: №{ticket.number}, {doctor}")
+                  detail=f"Navbat chiptasi bemorga bog'landi: №{ticket.number}, {doctor}{no_photo}"[:255])
         return Response(_ticket_doctor_data(ticket))
 
 

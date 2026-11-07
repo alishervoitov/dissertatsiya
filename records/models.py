@@ -17,6 +17,9 @@ class Patient(models.Model):
 
     # Nozik shaxsiy ma'lumotlar - shifrlangan holda saqlanadi
     national_id = EncryptedCharField(blank=True, help_text="Shaxsni tasdiqlovchi hujjat raqami")
+    # Registraturada qidirish uchun hujjat raqamining oxirgi 4 raqami (S8). To'liq raqam shifrlangan va
+    # qidirib bo'lmaydi; 4 raqam yolg'iz o'zi shaxsni ochmaydi (bank kartasining "****1234"i kabi).
+    national_id_last4 = models.CharField(max_length=4, blank=True, db_index=True, editable=False)
     address = EncryptedTextField(blank=True)
     emergency_contact = EncryptedCharField(blank=True)
     blood_type = models.CharField(max_length=5, blank=True)
@@ -37,6 +40,18 @@ class Patient(models.Model):
 
     def __str__(self):
         return f"Bemor: {self.user.get_full_name() or self.user.username}"
+
+    @staticmethod
+    def last4_of(national_id):
+        import re
+        digits = re.sub(r"\D", "", national_id or "")
+        return digits[-4:] if len(digits) >= 4 else ""
+
+    def save(self, *args, **kwargs):
+        self.national_id_last4 = self.last4_of(self.national_id)
+        if kwargs.get("update_fields") is not None and "national_id" in kwargs["update_fields"]:
+            kwargs["update_fields"] = {*kwargs["update_fields"], "national_id_last4"}
+        super().save(*args, **kwargs)
 
 
 class MedicalRecord(models.Model):

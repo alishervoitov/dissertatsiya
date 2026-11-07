@@ -264,13 +264,17 @@ class RegistryTicketView(APIView):
         patient = Patient.objects.select_related("user").filter(pk=s.validated_data["patient"]).first()
         if not patient:
             return Response({"detail": "Bemor topilmadi."}, status=status.HTTP_400_BAD_REQUEST)
+        from .registry import photo_gate
+        blocked, no_photo = photo_gate(request, patient)
+        if blocked:
+            return blocked
         try:
             ticket = issue_ticket(profile, QueueTicket.SOURCE_REGISTRY, patient=patient,
                                   issued_by=request.user, enforce_hours=False)
         except QueueError as exc:
             return _error(exc)
         log_audit(request.user, "create", patient=patient,
-                  detail=f"Registratura navbati: №{ticket.number}, {doctor_name(profile.user)}")
+                  detail=f"Registratura navbati: №{ticket.number}, {doctor_name(profile.user)}{no_photo}"[:255])
         data = _ticket_data(ticket)
         data["patient_name"] = patient.user.get_full_name() or patient.user.username
         return Response(data, status=status.HTTP_201_CREATED)

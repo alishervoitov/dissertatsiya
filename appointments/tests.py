@@ -18,6 +18,8 @@ from users.models import Role, User
 from .models import DoctorProfile, QueueTicket
 from .services import queue_state, service_minutes
 
+NO_PHOTO = "sinov: kamera yo'q"
+
 TZ = ZoneInfo("Asia/Tashkent")
 DAY = datetime(2026, 11, 2, tzinfo=TZ).date()
 
@@ -59,7 +61,8 @@ class QueueTestBase(APITestCase):
     def registry(self, name="", doctor=None, patient=None):
         patient = patient or self.walk_in_patient(name)
         self.client.force_authenticate(self.admin)
-        return self.client.post("/api/queue/registry/", {"doctor": (doctor or self.doctor).id, "patient": patient.id}, format="json")
+        return self.client.post("/api/queue/registry/", {"doctor": (doctor or self.doctor).id, "patient": patient.id,
+                                                         "no_photo_reason": NO_PHOTO}, format="json")
 
 
 class NumberingAndEtaTests(QueueTestBase):
@@ -601,21 +604,21 @@ class RegistryIdentifyTests(QueueTestBase):
         kiosk = issue_ticket(self.profile, QueueTicket.SOURCE_KIOSK)
         url = f"/api/queue/registry/tickets/{kiosk.id}/link/"
         self.client.force_authenticate(self.doctor)                    # shifokor bog'lay olmaydi
-        self.assertEqual(self.client.post(url, {"patient": self.anvar.id}, format="json").status_code, 403)
+        self.assertEqual(self.client.post(url, {"patient": self.anvar.id, "no_photo_reason": NO_PHOTO}, format="json").status_code, 403)
         self.client.force_authenticate(self.admin)
-        r = self.client.post(url, {"patient": self.anvar.id}, format="json")
+        r = self.client.post(url, {"patient": self.anvar.id, "no_photo_reason": NO_PHOTO}, format="json")
         self.assertEqual((r.status_code, r.data["patient_id"], r.data["name"]), (200, self.anvar.id, "Anvar Karimov"))
         self.assertTrue(AuditLog.objects.filter(actor=self.admin, patient=self.anvar,
                                                 detail__startswith="Navbat chiptasi bemorga bog'landi").exists())
-        r = self.client.post(url, {"patient": self.patient.id}, format="json")          # qayta bog'lab bo'lmaydi
+        r = self.client.post(url, {"patient": self.patient.id, "no_photo_reason": NO_PHOTO}, format="json")          # qayta bog'lab bo'lmaydi
         self.assertEqual((r.status_code, r.data["code"]), (409, "already_linked"))
         other = issue_ticket(self.profile, QueueTicket.SOURCE_KIOSK)
-        r = self.client.post(f"/api/queue/registry/tickets/{other.id}/link/", {"patient": self.anvar.id}, format="json")
+        r = self.client.post(f"/api/queue/registry/tickets/{other.id}/link/", {"patient": self.anvar.id, "no_photo_reason": NO_PHOTO}, format="json")
         self.assertEqual((r.status_code, r.data["code"]), (409, "duplicate"))
         other.status = QueueTicket.CANCELLED
         other.save()
         self.assertEqual(self.client.post(f"/api/queue/registry/tickets/{other.id}/link/",
-                                          {"patient": self.patient.id}, format="json").status_code, 404)
+                                          {"patient": self.patient.id, "no_photo_reason": NO_PHOTO}, format="json").status_code, 404)
         self.client.force_authenticate(self.doctor)
         self.assertEqual(self.client.get(f"/api/records/patients/{self.anvar.id}/").status_code, 200)
 
@@ -802,3 +805,62 @@ class KioskDeviceTests(QueueTestBase):
         self.assertEqual(self.kiosk_get("legacy-key").status_code, 200)
         self.client.force_authenticate(self.admin)
         self.assertTrue(self.client.get("/api/queue/kiosks/").data["legacy_key_active"])
+
+
+class RegistryIdentityChecksTests(QueueTestBase):
+    """S8: registraturada noto'g'ri bemorni tanlashning oldini olish - rasm va hujjat raqamining oxirgi 4 raqami."""
+
+    def setUp(self):
+        super().setUp()
+        self.client.force_authenticate(self.admin)
+        self.p = self.walk_in_patient("Anvar")
+        self.p.national_id = "AB 1234567"
+        self.p.save()
+
+    def add_photo(self, patient):
+        from records.models import PatientPhoto
+        PatientPhoto.objects.create(patient=patient, image="x", uploaded_by=self.admin, updated_at=at(9))
+
+    def issue(self, **extra):
+        return self.client.post("/api/queue/registry/", {"doctor": self.doctor.id, "patient": self.p.id, **extra},
+                                format="json")
+
+    def test_last4_stored_and_searchable(self):
+        self.p.refresh_from_db()
+        self.assertEqual(self.p.national_id_last4, "4567")
+        found = self.client.get("/api/queue/registry/patients/", {"q": "4567"}).data
+        self.assertEqual([x["id"] for x in found], [self.p.id])
+        self.assertEqual(found[0]["id_last4"], "4567")
+        self.assertEqual(self.client.get("/api/queue/registry/patients/", {"q": "1234"}).data, [])
+        self.p.national_id = ""
+        self.p.save(update_fields=["national_id"])
+        self.p.refresh_from_db()
+        self.assertEqual(self.p.national_id_last4, "")
+
+    def test_registry_creates_with_document(self):
+        r = self.client.post("/api/queue/registry/patients/", {"first_name": "Dilnoza", "last_name": "Usmonova",
+                             "date_of_birth": "1995-03-08", "national_id": "ad 7654321"}, format="json")
+        self.assertEqual(r.data["id_last4"], "4321")
+        from records.models import Patient
+        self.assertEqual(Patient.objects.get(pk=r.data["id"]).national_id, "AD 7654321")
+
+    def test_ticket_requires_photo_or_reason(self):
+        r = self.issue()
+        self.assertEqual((r.status_code, r.data["code"]), (409, "photo_required"))
+        self.assertEqual(self.issue(no_photo_reason="yo'q").status_code, 409)      # juda qisqa sabab
+        r = self.issue(no_photo_reason="Kamera ishlamayapti")
+        self.assertEqual(r.status_code, 201)
+        self.assertTrue(AuditLog.objects.filter(detail__endswith="rasmsiz: Kamera ishlamayapti").exists())
+
+    def test_ticket_with_photo_needs_no_reason(self):
+        self.add_photo(self.p)
+        self.assertEqual(self.issue().status_code, 201)
+
+    def test_link_kiosk_ticket_requires_photo_too(self):
+        from .services import issue_ticket
+        kiosk = issue_ticket(self.profile, QueueTicket.SOURCE_KIOSK)
+        url = f"/api/queue/registry/tickets/{kiosk.id}/link/"
+        r = self.client.post(url, {"patient": self.p.id}, format="json")
+        self.assertEqual((r.status_code, r.data["code"]), (409, "photo_required"))
+        self.add_photo(self.p)
+        self.assertEqual(self.client.post(url, {"patient": self.p.id}, format="json").status_code, 200)

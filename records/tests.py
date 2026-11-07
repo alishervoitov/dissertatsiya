@@ -450,7 +450,7 @@ class AuditAnchorTests(TestCase):
         from .models import AuditCheckpoint
         from .tasks import verify_audit_chain
         sent = []
-        with mock.patch("records.audit_anchor.urllib.request.urlopen", self.fake_urlopen(sent)):
+        with mock.patch("monitoring.telegram.urllib.request.urlopen", self.fake_urlopen(sent)):
             self.assertTrue(verify_audit_chain()["ok"])
         cp = AuditCheckpoint.objects.get()
         self.assertEqual(len(sent), 1)
@@ -475,7 +475,7 @@ class AuditAnchorTests(TestCase):
         with attacker_bypass():
             AuditLog.objects.filter(pk=self.entries[1].pk).update(detail="x")
         sent = []
-        with mock.patch("records.audit_anchor.urllib.request.urlopen", self.fake_urlopen(sent)):
+        with mock.patch("monitoring.telegram.urllib.request.urlopen", self.fake_urlopen(sent)):
             self.assertFalse(verify_audit_chain()["ok"])
         self.assertIn("BUZILGAN", sent[0][1]["text"])
         self.assertNotIn("verify_audit_anchor", sent[0][1]["text"])
@@ -484,7 +484,7 @@ class AuditAnchorTests(TestCase):
     def test_not_configured_skips_quietly(self):
         from unittest import mock
         from .tasks import verify_audit_chain
-        with mock.patch("records.audit_anchor.urllib.request.urlopen") as m:
+        with mock.patch("monitoring.telegram.urllib.request.urlopen") as m:
             self.assertTrue(verify_audit_chain()["ok"])
         m.assert_not_called()
 
@@ -493,18 +493,18 @@ class AuditAnchorTests(TestCase):
         from unittest import mock
         from .audit_anchor import AnchorSendError, send
         for exc in (urllib.error.URLError("https://api.telegram.org/bot123:SECRET-TOKEN/x"), TimeoutError()):
-            with mock.patch("records.audit_anchor.urllib.request.urlopen", side_effect=exc):
+            with mock.patch("monitoring.telegram.urllib.request.urlopen", side_effect=exc):
                 with self.assertRaises(AnchorSendError) as cm:
                     send("x")
             self.assertNotIn("SECRET", str(cm.exception))
-        with mock.patch("records.audit_anchor.urllib.request.urlopen", self.fake_urlopen([], ok=False)):
+        with mock.patch("monitoring.telegram.urllib.request.urlopen", self.fake_urlopen([], ok=False)):
             with self.assertRaisesMessage(AnchorSendError, "chat not found"):
                 send("x")
 
     def test_failed_send_is_retried_then_gives_up(self):
         from unittest import mock
         from .tasks import send_audit_anchor
-        with mock.patch("records.audit_anchor.urllib.request.urlopen", side_effect=TimeoutError()) as m:
+        with mock.patch("monitoring.telegram.urllib.request.urlopen", side_effect=TimeoutError()) as m:
             send_audit_anchor.apply(args=["x"])
         self.assertEqual(m.call_count, send_audit_anchor.max_retries + 1)
 

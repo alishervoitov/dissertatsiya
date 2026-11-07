@@ -169,10 +169,10 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
             data = TokenObtainSerializer.validate(self, attrs)
         except AuthenticationFailed:
             if register_login_failure(username, ident):
-                security_logger.warning(
-                    "Login bloklandi: %r (IP: %s, %s daqiqa)",
-                    username, ident, int(LOCKOUT_DURATION.total_seconds() // 60),
-                )
+                minutes = int(LOCKOUT_DURATION.total_seconds() // 60)
+                security_logger.warning("Login bloklandi: %r (IP: %s, %s daqiqa)", username, ident, minutes)
+                from monitoring.notify import login_locked
+                login_locked(username, ident, minutes)
             raise AuthenticationFailed(LOGIN_FAILED_MESSAGE, code="login_failed")
 
         clear_login_failures(username, ident)

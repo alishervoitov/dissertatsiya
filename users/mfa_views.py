@@ -63,6 +63,9 @@ class MfaLoginView(APIView):
                                     getattr(user, "username", user_id), client_ident(request), tries)
             left = max(0, mfa.MFA_MAX_ATTEMPTS - tries)
             if not left:
+                if user:
+                    from monitoring.notify import mfa_exhausted
+                    mfa_exhausted(user, client_ident(request))
                 return _bad("Urinishlar tugadi. Login va parolni qaytadan kiriting.", "mfa_expired",
                             status.HTTP_401_UNAUTHORIZED)
             return Response({"detail": "Kod noto'g'ri.", "code": "mfa_invalid", "attempts_left": left},
@@ -74,6 +77,8 @@ class MfaLoginView(APIView):
             data["backup_remaining"] = mfa.backup_remaining(user)
             security_logger.warning("Zaxira kod bilan kirildi: %r (IP: %s, qoldi %s)",
                                     user.username, client_ident(request), data["backup_remaining"])
+            from monitoring.notify import backup_code_login
+            backup_code_login(user, client_ident(request), data["backup_remaining"])
         security_logger.info("Muvaffaqiyatli kirish (2FA, %s): %r (IP: %s)", method, user.username, client_ident(request))
         # Refresh token - faqat httpOnly cookie'da (users/auth_cookies.py)
         return set_refresh_cookie(Response(data), refresh)

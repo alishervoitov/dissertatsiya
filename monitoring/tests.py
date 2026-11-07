@@ -111,3 +111,137 @@ class DetectorTests(APITestCase):
         # ko'rib chiqilgandan keyin shu kechadagi yangi murojaat yangi ogohlantirish ochadi
         log_audit(self.doctor, "view", patient=self.patients[1])
         self.assertEqual(SecurityAlert.objects.filter(status="open").count(), 1)
+
+
+@override_settings(TELEGRAM_BOT_TOKEN="123:SECRET", TELEGRAM_AUDIT_CHAT_ID="42", TELEGRAM_ALERT_CHAT_ID="",
+                   FRONTEND_URL="https://medsecure.uz")
+@mock.patch("rest_framework.throttling.ScopedRateThrottle.allow_request", return_value=True)
+class TelegramAlertTests(APITestCase):
+    """Xavfsizlik hodisalari administratorning Telegram'iga real vaqtda yuboriladi."""
+
+    PW = "Qx7#vTm2!pLz9w"
+
+    def setUp(self):
+        from django.core.cache import cache
+        cache.clear()
+        self.sent = []
+        patcher = mock.patch("monitoring.telegram.send", side_effect=self._send)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.doctor = User.objects.create_user(username="tg_doc", password=self.PW, role=Role.DOCTOR)
+
+    def _send(self, text, chat_id):
+        self.sent.append((chat_id, text))
+        return len(self.sent)
+
+    def make_alert(self, **kw):
+        from django.utils import timezone
+        now = timezone.now()
+        data = dict(rule=SecurityAlert.EMERGENCY_ACCESS, severity="high", actor=self.doctor, actor_role="doctor",
+                    detail="Bemor #7: <b>hushsiz</b> keltirildi", first_seen=now, last_seen=now)
+        data.update(kw)
+        with self.captureOnCommitCallbacks(execute=True):
+            return SecurityAlert.objects.create(**data)
+
+    def test_new_alert_is_sent_escaped(self, _):
+        self.make_alert()
+        self.assertEqual(len(self.sent), 1)
+        chat, text = self.sent[0]
+        self.assertEqual(chat, "42")                              # alohida chat berilmasa - audit chatiga
+        self.assertIn("🔴", text)
+        self.assertIn("Favqulodda kirish", text)
+        self.assertIn("tg_doc", text)
+        self.assertIn("&lt;b&gt;hushsiz&lt;/b&gt;", text)        # foydalanuvchi matni HTML sifatida ishlamaydi
+        self.assertIn("https://medsecure.uz/admin/alerts", text)
+
+    @override_settings(TELEGRAM_ALERT_CHAT_ID="99")
+    def test_separate_alert_chat(self, _):
+        self.make_alert()
+        self.assertEqual(self.sent[0][0], "99")
+
+    def test_counter_update_and_audit_tamper_not_sent(self, _):
+        alert = self.make_alert()
+        with self.captureOnCommitCallbacks(execute=True):
+            alert.count += 1
+            alert.save(update_fields=["count"])
+        self.make_alert(rule=SecurityAlert.AUDIT_TAMPER, actor=None)
+        self.assertEqual(len(self.sent), 1)
+
+    def test_detector_alert_is_sent(self, _):
+        patient = Patient.objects.get(user=User.objects.create_user(username="tg_p", password="x", role=Role.PATIENT))
+        with mock.patch("django.utils.timezone.now", return_value=at(23, 15)), \
+                self.captureOnCommitCallbacks(execute=True):
+            log_audit(self.doctor, "view", patient=patient)
+        self.assertEqual(len(self.sent), 1)
+        self.assertIn("🟠", self.sent[0][1])                     # tungi murojaat - o'rta daraja
+
+    @override_settings(TELEGRAM_BOT_TOKEN="")
+    def test_not_configured_sends_nothing(self, _):
+        self.make_alert()
+        self.assertEqual(self.sent, [])
+
+    def login(self, username, password):
+        with self.captureOnCommitCallbacks(execute=True):
+            return self.client.post("/api/auth/login/", {"username": username, "password": password},
+                                    format="json", HTTP_X_FORWARDED_FOR="203.0.113.9")
+
+    def test_login_lockout_sent_once_with_account_hint(self, _):
+        from users.security import MAX_FAILED_ATTEMPTS
+        for _i in range(MAX_FAILED_ATTEMPTS + 2):
+            self.login("tg_doc", "wrong")
+        for _i in range(MAX_FAILED_ATTEMPTS):
+            self.login("<i>ghost</i>", "wrong")
+        self.assertEqual(len(self.sent), 2)
+        real, ghost = self.sent[0][1], self.sent[1][1]
+        self.assertIn("login bloklandi", real)
+        self.assertIn("hisob mavjud, rol: doctor", real)
+        self.assertIn("203.0.113.9", real)
+        self.assertIn("hisob mavjud emas", ghost)
+        self.assertIn("&lt;i&gt;ghost&lt;/i&gt;", ghost)
+
+    def mfa_login(self):
+        from django.utils import timezone
+        from users import mfa
+        from users.models import TwoFactorDevice
+        secret = mfa.new_secret()
+        TwoFactorDevice.objects.create(user=self.doctor, secret=secret, confirmed_at=timezone.now())
+        self.doctor.is_active_2fa = True
+        self.doctor.save()
+        r = self.login("tg_doc", self.PW)
+        self.assertTrue(r.data["mfa_required"])
+        return r.data["mfa_token"]
+
+    def test_mfa_exhausted_sent(self, _):
+        from users import mfa
+        token = self.mfa_login()
+        for _i in range(mfa.MFA_MAX_ATTEMPTS):
+            with self.captureOnCommitCallbacks(execute=True):
+                self.client.post("/api/auth/login/2fa/", {"mfa_token": token, "code": "000000"}, format="json")
+        self.assertEqual(len(self.sent), 1)
+        self.assertIn("2FA kodi 5 marta noto'g'ri", self.sent[0][1])
+        self.assertIn("Parol to'g'ri kiritilgan", self.sent[0][1])
+
+    def test_backup_code_login_sent(self, _):
+        from users import mfa
+        token = self.mfa_login()
+        code = mfa.new_backup_codes(self.doctor)[0]
+        with self.captureOnCommitCallbacks(execute=True):
+            r = self.client.post("/api/auth/login/2fa/", {"mfa_token": token, "code": code}, format="json")
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertIn("zaxira kod bilan kirildi", self.sent[-1][1])
+
+    def test_flood_is_capped(self, _):
+        from monitoring.notify import ALERT_RATE_LIMIT, notify
+        with self.captureOnCommitCallbacks(execute=True):
+            for i in range(ALERT_RATE_LIMIT + 10):
+                notify(f"hodisa {i}")
+        self.assertEqual(len(self.sent), ALERT_RATE_LIMIT + 1)
+        self.assertIn("juda ko'p xavfsizlik hodisasi", self.sent[-1][1])
+
+    def test_telegram_down_does_not_break_request(self, _):
+        from monitoring import telegram
+        with mock.patch("monitoring.telegram.send", side_effect=telegram.TelegramError("Tarmoq xatosi")):
+            from users.security import MAX_FAILED_ATTEMPTS
+            for _i in range(MAX_FAILED_ATTEMPTS):
+                r = self.login("tg_doc", "wrong")
+        self.assertEqual(r.status_code, 401)

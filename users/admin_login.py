@@ -58,3 +58,7 @@ class MfaAdminAuthenticationForm(AdminAuthenticationForm):
         locked = register_login_failure(username, ident)
         security_logger.warning("Django admin: noto'g'ri %s %r (IP: %s)%s", what, username, ident,
                                 " - bloklandi" if locked else "")
+        if locked:
+            from monitoring.notify import login_locked
+            from .security import LOCKOUT_DURATION
+            login_locked(username, ident, int(LOCKOUT_DURATION.total_seconds() // 60), source="Django admin")

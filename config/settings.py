@@ -299,6 +299,8 @@ AUDIT_HMAC_KEY = os.environ.get("AUDIT_HMAC_KEY", "")
 # Ikkalasi ham bo'sh bo'lsa yuborilmaydi. Token faqat .env.docker'da, git'ga tushmaydi.
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_AUDIT_CHAT_ID = os.environ.get("TELEGRAM_AUDIT_CHAT_ID", "")
+# Xavfsizlik ogohlantirishlari real vaqtda (monitoring/notify.py). Bo'sh bo'lsa - audit chatiga.
+TELEGRAM_ALERT_CHAT_ID = os.environ.get("TELEGRAM_ALERT_CHAT_ID", "")
 
 
 # JWT sozlamalari (logout tokenni qora ro'yxatga qo'shishi uchun token_blacklist ilovasi kerak)

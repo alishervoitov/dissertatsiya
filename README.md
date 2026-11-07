@@ -191,6 +191,19 @@ Langargacha bo'lgan biror yozuv o'zgartirilgan, o'chirilgan yoki zanjir qayta yo
 eski langarlar mos kelmaydi — kalit almashtirilgach darhol `verify_audit_log --checkpoint --telegram`
 bilan yangi langar yuboring.
 
+### Xavfsizlik ogohlantirishlari (Telegram)
+
+Shu bot shubhali hodisalarni ham darhol administratorga yuboradi (`monitoring/notify.py`):
+
+- yangi ogohlantirish: qisqa vaqtda ko'p bemor kartasi, tungi murojaat, ko'p eksport, favqulodda kirish;
+- login bloklanishi (5 marta noto'g'ri parol) — sayt va Django admin; hisob mavjud yoki taxmin qilinayotgani ko'rsatiladi;
+- 2FA kodi 5 marta noto'g'ri — parol to'g'ri kiritilgan, ya'ni oshkor bo'lgan bo'lishi mumkin;
+- zaxira kod bilan kirish.
+
+Foydalanuvchi kiritgan matn HTML-escape qilinadi; 10 daqiqada ko'pi bilan 20 ta xabar (ko'proq bo'lsa bitta
+«juda ko'p hodisa» xabari). Yuborish Celery'da — Telegram ishlamasa ham sayt ishlayveradi.
+Alohida chat kerak bo'lsa: `TELEGRAM_ALERT_CHAT_ID` (bo'sh bo'lsa audit chatiga).
+
 ## Uzluksiz integratsiya (CI)
 
 Har bir push va pull request'da GitHub Actions quyidagilarni avtomatik bajaradi (`.github/workflows/ci.yml`):

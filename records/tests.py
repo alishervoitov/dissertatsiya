@@ -423,6 +423,132 @@ class AuditHashChainTests(APITestCase):
         self.assertEqual((cp.last_id, cp.count), (self.entries[-1].pk, 6))
 
 
+@override_settings(TELEGRAM_BOT_TOKEN="123:SECRET-TOKEN", TELEGRAM_AUDIT_CHAT_ID="42")
+class AuditAnchorTests(TestCase):
+    """T1: zanjir oxiri tashqi guvohga (Telegram) yuboriladi; kalit bilan qayta yozilgan zanjir ham ushlanadi."""
+
+    def setUp(self):
+        from .audit import log_audit
+        self.doctor = User.objects.create_user(username="anc_doc", password="x", role=Role.DOCTOR)
+        self.entries = [log_audit(self.doctor, "view", detail=f"Ko'rish {i}") for i in range(5)]
+
+    def fake_urlopen(self, sent, ok=True):
+        import json
+        from unittest import mock
+
+        def opener(req, timeout=None):
+            sent.append((req.full_url, json.loads(req.data)))
+            resp = mock.MagicMock()
+            resp.__enter__.return_value.read.return_value = json.dumps(
+                {"ok": True, "result": {"message_id": 777}} if ok else {"ok": False, "description": "chat not found"}
+            ).encode()
+            return resp
+        return opener
+
+    def test_daily_task_sends_anchor_without_patient_data(self):
+        from unittest import mock
+        from .models import AuditCheckpoint
+        from .tasks import verify_audit_chain
+        sent = []
+        with mock.patch("records.audit_anchor.urllib.request.urlopen", self.fake_urlopen(sent)):
+            self.assertTrue(verify_audit_chain()["ok"])
+        cp = AuditCheckpoint.objects.get()
+        self.assertEqual(len(sent), 1)
+        url, body = sent[0]
+        self.assertIn("/bot123:SECRET-TOKEN/sendMessage", url)
+        self.assertEqual(body["chat_id"], "42")
+        self.assertIn(cp.last_hash, body["text"])
+        self.assertIn(f"verify_audit_anchor {cp.last_id} {cp.last_hash} --count 5", body["text"])
+        self.assertNotIn("Ko'rish", body["text"])          # yozuv mazmuni chiqmaydi
+
+    def test_broken_chain_sends_alarm(self):
+        from unittest import mock
+        from .tasks import verify_audit_chain
+        with attacker_bypass():
+            AuditLog.objects.filter(pk=self.entries[1].pk).update(detail="x")
+        sent = []
+        with mock.patch("records.audit_anchor.urllib.request.urlopen", self.fake_urlopen(sent)):
+            self.assertFalse(verify_audit_chain()["ok"])
+        self.assertIn("BUZILGAN", sent[0][1]["text"])
+        self.assertNotIn("verify_audit_anchor", sent[0][1]["text"])
+
+    @override_settings(TELEGRAM_BOT_TOKEN="", TELEGRAM_AUDIT_CHAT_ID="")
+    def test_not_configured_skips_quietly(self):
+        from unittest import mock
+        from .tasks import verify_audit_chain
+        with mock.patch("records.audit_anchor.urllib.request.urlopen") as m:
+            self.assertTrue(verify_audit_chain()["ok"])
+        m.assert_not_called()
+
+    def test_send_error_never_leaks_token(self):
+        import urllib.error
+        from unittest import mock
+        from .audit_anchor import AnchorSendError, send
+        for exc in (urllib.error.URLError("https://api.telegram.org/bot123:SECRET-TOKEN/x"), TimeoutError()):
+            with mock.patch("records.audit_anchor.urllib.request.urlopen", side_effect=exc):
+                with self.assertRaises(AnchorSendError) as cm:
+                    send("x")
+            self.assertNotIn("SECRET", str(cm.exception))
+        with mock.patch("records.audit_anchor.urllib.request.urlopen", self.fake_urlopen([], ok=False)):
+            with self.assertRaisesMessage(AnchorSendError, "chat not found"):
+                send("x")
+
+    def test_failed_send_is_retried_then_gives_up(self):
+        from unittest import mock
+        from .tasks import send_audit_anchor
+        with mock.patch("records.audit_anchor.urllib.request.urlopen", side_effect=TimeoutError()) as m:
+            send_audit_anchor.apply(args=["x"])
+        self.assertEqual(m.call_count, send_audit_anchor.max_retries + 1)
+
+    def anchor(self):
+        from .audit_anchor import check_anchor
+        last = self.entries[-1]
+        return lambda **kw: check_anchor(AuditLog, last.pk, last.entry_hash, 5, **kw)
+
+    def test_anchor_matches_untouched_chain(self):
+        from .audit import log_audit
+        check = self.anchor()
+        log_audit(self.doctor, "view", detail="langardan keyin")   # keyingi yozuvlar langarga ta'sir qilmaydi
+        self.assertTrue(check()["ok"])
+
+    def test_rewritten_chain_with_key_is_caught_by_anchor(self):
+        """Server egallangan: buzg'unchi kalitni biladi va zanjirni qayta hisoblaydi - ichki tekshiruv o'tadi,
+        lekin Telegram'dagi langar mos kelmaydi."""
+        from . import audit_chain
+        from .models import AuditCheckpoint
+        check = self.anchor()
+        with attacker_bypass():
+            AuditLog.objects.filter(pk=self.entries[1].pk).update(detail="Hech narsa ko'rilmadi")
+            prev = audit_chain.GENESIS
+            for e in AuditLog.objects.order_by("id"):
+                h = audit_chain.compute_hash(e, prev)
+                AuditLog.objects.filter(pk=e.pk).update(prev_hash=prev, entry_hash=h)
+                prev = h
+        self.assertTrue(audit_chain.verify(AuditLog, AuditCheckpoint)["ok"])   # ichki tekshiruv aldandi
+        r = check()
+        self.assertFalse(r["ok"])
+        self.assertIn("qayta yozilgan", " ".join(r["problems"]))
+
+    def test_deleted_rows_caught_by_anchor(self):
+        check = self.anchor()
+        with attacker_bypass():
+            AuditLog.objects.filter(pk=self.entries[-1].pk)._raw_delete(AuditLog.objects.db)
+        self.assertIn("o'chirilgan", " ".join(check()["problems"]))
+
+    def test_command(self):
+        from io import StringIO
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+        last = self.entries[-1]
+        out = StringIO()
+        call_command("verify_audit_anchor", str(last.pk), last.entry_hash, "--count", "5", stdout=out)
+        self.assertIn("Langar mos", out.getvalue())
+        with self.assertRaises(SystemExit):
+            call_command("verify_audit_anchor", str(last.pk), "0" * 64, stdout=StringIO())
+        with self.assertRaises(CommandError):
+            call_command("verify_audit_anchor", str(last.pk), "zz", stdout=StringIO())
+
+
 class AuditRekeyTests(TestCase):
     def setUp(self):
         from .audit import log_audit

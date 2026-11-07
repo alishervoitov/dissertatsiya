@@ -169,6 +169,28 @@ Loyiha ikki qatlamli himoya modeliga asoslangan:
 1. **Operatsion xavfsizlik** — kundalik foydalanishda (RBAC, JWT, shifrlash, audit, brute-force himoyasi)
 2. **Ikkilamchi foydalanish xavfsizligi** — ma'lumot tadqiqot/statistika uchun chiqarilganda (k-anonimlik asosidagi anonimlashtirish)
 
+### Audit langari (Telegram)
+
+Audit jurnali HMAC xesh zanjiri bilan himoyalangan, lekin kalit serverda turadi: serverni to'liq egallagan
+buzg'unchi yozuvni o'zgartirib, zanjirni kalit bilan qayta hisoblashi mumkin. Buni sezish uchun har kuni
+02:10 (Toshkent) da tekshiruvdan keyin zanjir oxiri — oxirgi yozuv raqami, uning xeshi va yozuvlar soni —
+administratorning Telegram chatiga yuboriladi. Xabarda bemor ma'lumoti yo'q. Zanjir buzilgan bo'lsa,
+langar o'rniga ogohlantirish keladi.
+
+Sozlash (`.env.docker`): `TELEGRAM_BOT_TOKEN` (@BotFather bergan token) va `TELEGRAM_AUDIT_CHAT_ID`.
+Darhol sinash: `python manage.py verify_audit_log --telegram`.
+
+Tekshirish — langar xabaridagi buyruqni serverda ishga tushiring:
+
+```bash
+python manage.py verify_audit_anchor <oxirgi_id> <xesh> --count <soni>
+```
+
+Langargacha bo'lgan biror yozuv o'zgartirilgan, o'chirilgan yoki zanjir qayta yozilgan bo'lsa, buyruq
+«LANGAR MOS EMAS» deydi. Eslatma: `rekey_audit_chain` dan keyin barcha xeshlar o'zgaradi, shuning uchun
+eski langarlar mos kelmaydi — kalit almashtirilgach darhol `verify_audit_log --checkpoint --telegram`
+bilan yangi langar yuboring.
+
 ## Uzluksiz integratsiya (CI)
 
 Har bir push va pull request'da GitHub Actions quyidagilarni avtomatik bajaradi (`.github/workflows/ci.yml`):

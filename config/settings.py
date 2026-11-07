@@ -295,6 +295,11 @@ PATIENT_CONSENT_REQUIRED = os.environ.get("PATIENT_CONSENT_REQUIRED", "1") == "1
 # Diqqat: kalit (yoki SECRET_KEY) almashtirilsa eski yozuvlar tekshiruvdan o'tmaydi.
 AUDIT_HMAC_KEY = os.environ.get("AUDIT_HMAC_KEY", "")
 
+# Audit langari: kunlik tekshiruvdan keyin zanjir oxiri shu Telegram chatiga yuboriladi (records/audit_anchor.py).
+# Ikkalasi ham bo'sh bo'lsa yuborilmaydi. Token faqat .env.docker'da, git'ga tushmaydi.
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_AUDIT_CHAT_ID = os.environ.get("TELEGRAM_AUDIT_CHAT_ID", "")
+
 
 # JWT sozlamalari (logout tokenni qora ro'yxatga qo'shishi uchun token_blacklist ilovasi kerak)
 from datetime import timedelta as _td

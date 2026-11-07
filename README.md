@@ -1,5 +1,7 @@
 # MedKarta — Bemor kasallik tarixi tizimi (Backend)
 
+[![Backend CI](https://github.com/alishervoitov/dissertatsiya/actions/workflows/ci.yml/badge.svg)](https://github.com/alishervoitov/dissertatsiya/actions/workflows/ci.yml) [![Frontend CI](https://github.com/alishervoitov/frontend/actions/workflows/ci.yml/badge.svg)](https://github.com/alishervoitov/frontend/actions/workflows/ci.yml)
+
 Tibbiy ma'lumotlar xavfsizligini ta'minlovchi bemorlar kasallik tarixini boshqarish tizimining backend qismi. Django REST Framework asosida qurilgan, magistrlik dissertatsiyasi doirasida ishlab chiqilgan.
 
 ## Texnologiyalar
@@ -9,7 +11,7 @@ Tibbiy ma'lumotlar xavfsizligini ta'minlovchi bemorlar kasallik tarixini boshqar
 - **PostgreSQL 16** — asosiy ma'lumotlar bazasi
 - **Redis** — kesh va Celery uchun vositachi (broker)
 - **Celery + Celery Beat** — fon vazifalari va davriy jarayonlar
-- **djangorestframework-simplejwt** — JWT autentifikatsiya
+- **djangorestframework-simplejwt** — JWT autentifikatsiya (refresh token httpOnly cookie'da)
 - **cryptography (Fernet)** — maydon darajasida shifrlash (AES-128)
 - **ReportLab** — PDF hujjatlar generatsiyasi
 - **pytest-django** — avtomatik testlar
@@ -109,10 +111,14 @@ celery -A config beat -l info
 
 ## Testlarni ishga tushirish
 
+Testlar Postgres, Redis va media papkaga tegmaydigan `config/settings_test.py` bilan ishlaydi (SQLite xotirada):
+
 ```bash
-pytest
-pytest --cov=users --cov=records --cov-report=term-missing
+export SECRET_KEY=test FIELD_ENCRYPTION_KEY=$(python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
+python manage.py test --settings=config.settings_test
 ```
+
+PostgreSQL bilan (audit jurnali triggeri ham tekshiriladi): `CI_POSTGRES=1 DB_HOST=... DB_USER=... DB_PASSWORD=...` qo'shing.
 
 ## Loyiha tuzilishi
 dissertatsiya/
@@ -163,7 +169,17 @@ Loyiha ikki qatlamli himoya modeliga asoslangan:
 1. **Operatsion xavfsizlik** — kundalik foydalanishda (RBAC, JWT, shifrlash, audit, brute-force himoyasi)
 2. **Ikkilamchi foydalanish xavfsizligi** — ma'lumot tadqiqot/statistika uchun chiqarilganda (k-anonimlik asosidagi anonimlashtirish)
 
+## Uzluksiz integratsiya (CI)
+
+Har bir push va pull request'da GitHub Actions quyidagilarni avtomatik bajaradi (`.github/workflows/ci.yml`):
+
+- **Testlar** ikki bazada: SQLite (tez) va PostgreSQL 16 (audit jurnali triggeri bilan);
+- **pip-audit** — `requirements.txt` dagi kutubxonalarning ma'lum zaifliklarini PyPI va OSV bazasidan tekshiradi;
+- **bandit** — koddagi xavfli naqshlarni (o'rta va yuqori daraja) qidiradi.
+
+Kod o'zgarmasa ham har dushanba qayta ishga tushadi: kutubxonada yangi zaiflik e'lon qilinsa, CI qizilga aylanadi. Dependabot esa har hafta yangilanish uchun pull request ochadi.
+
 ## Muallif
 
-[F.I.Sh. — shu yerga to'ldiring], magistrant
-[Muassasa nomi — shu yerga to'ldiring]
+Voitov Alisher Abduvaxob o'g'li, magistrant (Axborot xavfsizligi, 70610202)
+Andijon davlat universiteti, Dasturiy injiniring kafedrasi

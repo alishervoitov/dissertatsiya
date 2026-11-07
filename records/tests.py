@@ -22,6 +22,29 @@ from .pdf_export import _text
 from .tasks import deactivate_expired_prescriptions
 
 
+from contextlib import contextmanager
+
+
+@contextmanager
+def attacker_bypass():
+    """Hujumchini taqlid qilish: baza superfoydalanuvchisi triggerlarni chetlab o'tadi (STRIDE T1).
+
+    PostgreSQL'da audit jurnalini UPDATE/DELETE trigger to'sadi - bu testlar aynan shu to'siqdan
+    keyingi qatlamni (HMAC zanjiri buzilganini aniqlashni) tekshiradi. SQLite'da trigger yo'q."""
+    from django.db import connection
+    if connection.vendor != "postgresql":
+        yield
+        return
+    with connection.cursor() as c:
+        c.execute("SET session_replication_role = replica")
+    try:
+        yield
+    finally:
+        with connection.cursor() as c:
+            c.execute("SET session_replication_role = DEFAULT")
+
+
+
 class DeactivateExpiredPrescriptionsTests(TestCase):
     def setUp(self):
         self.today = timezone.now().date()
@@ -87,16 +110,22 @@ class BeatScheduleTests(TestCase):
 
     def test_database_scheduler_syncs_and_does_not_run_immediately(self):
         from django_celery_beat.models import PeriodicTask
+        from unittest import mock
+
         from django_celery_beat.schedulers import DatabaseScheduler
 
         from config.celery import app
 
-        scheduler = DatabaseScheduler(app=app, lazy=False)
+        # Rejalashtiruvchi close_old_connections() chaqiradi: Postgres'da u test tranzaksiyasi
+        # ichidagi ulanishni yopib qo'yadi (SQLite'da sezilmaydi). Test uchun o'chiramiz.
+        with mock.patch("django_celery_beat.schedulers.close_old_connections"):
+            scheduler = DatabaseScheduler(app=app, lazy=False)
         task = PeriodicTask.objects.get(name="deactivate-expired-prescriptions")
         self.assertTrue(task.enabled)
         self.assertEqual((task.crontab.minute, task.crontab.hour), ("30", "0"))
         self.assertIsNone(task.last_run_at)
-        is_due, _next = scheduler.schedule["deactivate-expired-prescriptions"].is_due()
+        with mock.patch("django_celery_beat.schedulers.close_old_connections"):
+            is_due, _next = scheduler.schedule["deactivate-expired-prescriptions"].is_due()
         self.assertFalse(is_due)
 
 
@@ -191,7 +220,8 @@ class MyAccessLogTests(APITestCase):
         AuditLog.objects.create(actor=pu, action="view", patient=self.patient, detail="O'z profilini ko'rdi")
         AuditLog.objects.create(actor=self.doctor, action="view", patient=self.patient2, detail="Boshqa bemor")
         old = AuditLog.objects.create(actor=self.doctor, action="view", patient=self.patient, detail="Eski")
-        AuditLog.objects.filter(pk=old.pk).update(timestamp=timezone.now() - timedelta(days=100))
+        with attacker_bypass():                  # vaqtni sun'iy eskirtirish (Postgres'da trigger to'sadi)
+            AuditLog.objects.filter(pk=old.pk).update(timestamp=timezone.now() - timedelta(days=100))
 
     def get(self, user=None, q=""):
         self.client.force_authenticate(user or self.pat_user)
@@ -311,19 +341,22 @@ class AuditHashChainTests(APITestCase):
             e.delete()
 
     def test_detects_modified_detail(self):
-        AuditLog.objects.filter(pk=self.entries[2].pk).update(detail="Hech narsa ko'rilmadi")
+        with attacker_bypass():
+            AuditLog.objects.filter(pk=self.entries[2].pk).update(detail="Hech narsa ko'rilmadi")
         r = self.verify()
         self.assertFalse(r["ok"])
         self.assertEqual(r["problems"], [{"type": "modified", "id": self.entries[2].pk}])
 
     def test_detects_changed_actor_or_time(self):
-        AuditLog.objects.filter(pk=self.entries[3].pk).update(actor_snapshot=f"{self.admin.pk}:aud_admin:admin")
-        AuditLog.objects.filter(pk=self.entries[4].pk).update(timestamp=timezone.now() - timedelta(days=3))
+        with attacker_bypass():
+            AuditLog.objects.filter(pk=self.entries[3].pk).update(actor_snapshot=f"{self.admin.pk}:aud_admin:admin")
+            AuditLog.objects.filter(pk=self.entries[4].pk).update(timestamp=timezone.now() - timedelta(days=3))
         ids = {p["id"] for p in self.verify()["problems"]}
         self.assertEqual(ids, {self.entries[3].pk, self.entries[4].pk})
 
     def test_detects_deleted_middle_row(self):
-        AuditLog.objects.filter(pk=self.entries[2].pk)._raw_delete(AuditLog.objects.db)
+        with attacker_bypass():
+            AuditLog.objects.filter(pk=self.entries[2].pk)._raw_delete(AuditLog.objects.db)
         r = self.verify()
         self.assertEqual(r["problems"], [{"type": "link", "id": self.entries[3].pk}])
 
@@ -334,16 +367,33 @@ class AuditHashChainTests(APITestCase):
         e = AuditLog.objects.get(pk=self.entries[5].pk)
         e.detail = "yashirilgan"
         fake = hashlib.sha256(audit_chain.payload(e, e.prev_hash)).hexdigest()
-        AuditLog.objects.filter(pk=e.pk).update(detail="yashirilgan", entry_hash=fake)
+        with attacker_bypass():
+            AuditLog.objects.filter(pk=e.pk).update(detail="yashirilgan", entry_hash=fake)
         self.assertEqual(self.verify()["problems"], [{"type": "modified", "id": e.pk}])
 
     def test_tail_truncation_detected_by_checkpoint(self):
         from .audit_integrity import run_check
         self.assertTrue(run_check(make_checkpoint=True)["ok"])
-        AuditLog.objects.filter(pk__gte=self.entries[4].pk)._raw_delete(AuditLog.objects.db)
+        with attacker_bypass():
+            AuditLog.objects.filter(pk__gte=self.entries[4].pk)._raw_delete(AuditLog.objects.db)
         r = self.verify()
         self.assertFalse(r["ok"])
         self.assertEqual(r["problems"][0]["type"], "truncated")
+
+    def test_postgres_trigger_blocks_direct_sql(self):
+        """Birinchi qatlam: Postgres'da ORM'ni chetlab o'tgan to'g'ridan-to'g'ri SQL ham rad etiladi."""
+
+        from django.db import DatabaseError, connection, transaction
+        if connection.vendor != "postgresql":
+            self.skipTest("Trigger faqat PostgreSQL'da (CI'da tekshiriladi)")
+        pk = self.entries[1].pk
+        for sql in (f"UPDATE records_auditlog SET detail = 'x' WHERE id = {pk}",
+                    f"DELETE FROM records_auditlog WHERE id = {pk}",
+                    "TRUNCATE records_auditlog CASCADE"):
+            with self.subTest(sql=sql.split()[0]):
+                with self.assertRaises(DatabaseError), transaction.atomic(), connection.cursor() as c:
+                    c.execute(sql)
+        self.assertTrue(self.verify()["ok"])
 
     def test_user_deletion_keeps_chain_valid(self):
         self.doctor.delete()                       # FK NULL bo'ladi, lekin snapshot xeshda saqlangan
@@ -357,7 +407,8 @@ class AuditHashChainTests(APITestCase):
         self.client.force_authenticate(self.admin)
         r = self.client.get("/api/records/audit-logs/verify/").data
         self.assertTrue(r["ok"])
-        AuditLog.objects.filter(pk=self.entries[0].pk).update(detail="x")
+        with attacker_bypass():
+            AuditLog.objects.filter(pk=self.entries[0].pk).update(detail="x")
         r = self.client.get("/api/records/audit-logs/verify/").data
         self.assertFalse(r["ok"])
         self.assertEqual(SecurityAlert.objects.filter(rule="audit_tamper", severity="high").count(), 1)
@@ -392,7 +443,8 @@ class AuditRekeyTests(TestCase):
     def test_rekey_refuses_tampered_chain(self):
         from django.core.management import call_command
         from django.core.management.base import CommandError
-        AuditLog.objects.filter(detail="r1").update(detail="soxta")
+        with attacker_bypass():
+            AuditLog.objects.filter(detail="r1").update(detail="soxta")
         with override_settings(AUDIT_HMAC_KEY="d" * 64):
             with self.assertRaises(CommandError):
                 call_command("rekey_audit_chain", "--from-secret-key")

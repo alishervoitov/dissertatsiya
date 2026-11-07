@@ -1,0 +1,13 @@
+# Kutubxonalar uchun haftalik yangilanish so'rovlari (pull request) - CI ularni avtomatik sinaydi.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly

@@ -56,7 +56,8 @@ class Command(BaseCommand):
             pk = model._meta.pk.column
             cols = [f.column for f in fields]
             with connection.cursor() as cur:
-                cur.execute(f"SELECT {qn(pk)}, {', '.join(qn(c) for c in cols)} FROM {qn(table)} ORDER BY {qn(pk)}")
+                # Bandit B608 soxta signal: jadval/ustun nomlari model metadatasidan, quote_name bilan o'ralgan; qiymatlar parametr.
+                cur.execute(f"SELECT {qn(pk)}, {', '.join(qn(c) for c in cols)} FROM {qn(table)} ORDER BY {qn(pk)}")  # nosec B608
                 for row in cur.fetchall():
                     for col, value in zip(cols, row[1:]):
                         if not value:
@@ -114,7 +115,8 @@ class Command(BaseCommand):
                 for table, pk, col, row_id, value in plan:
                     # rotate: eski kalit bilan ochadi, asosiy kalit bilan qayta shifrlaydi (vaqt belgisi saqlanadi)
                     new_value = multi.rotate(value.encode()).decode()
-                    cur.execute(f"UPDATE {qn(table)} SET {qn(col)} = %s WHERE {qn(pk)} = %s", [new_value, row_id])
+                    # Bandit B608 soxta signal: jadval/ustun nomlari model metadatasidan, quote_name bilan o'ralgan; qiymatlar parametr.
+                    cur.execute(f"UPDATE {qn(table)} SET {qn(col)} = %s WHERE {qn(pk)} = %s", [new_value, row_id])  # nosec B608
             from records.audit import log_audit
             log_audit(None, "update", detail=f"Shifrlash kaliti almashtirildi: {len(plan)} ta qiymat yangi kalitga o'tkazildi")
 

@@ -1,0 +1,86 @@
+# ShifoSafe backend CI: har bir push va pull request'da testlar, zaiflik skaneri va statik tahlil.
+# Haftalik ishga tushirish - kod o'zgarmasa ham kutubxonalarda yangi topilgan zaifliklarni ushlaydi (STRIDE E7).
+name: Backend CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  schedule:
+    - cron: "17 2 * * 1"        # har dushanba 07:17 (Toshkent)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests-sqlite:
+    name: Testlar (SQLite)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Testlar
+        run: |
+          # Har ishga tushirishda yangi tasodifiy kalitlar - repoda hech qanday sir saqlanmaydi
+          export SECRET_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(50))')"
+          export FIELD_ENCRYPTION_KEY="$(python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"
+          python manage.py test --settings=config.settings_test --noinput
+
+  tests-postgres:
+    name: Testlar (PostgreSQL + audit trigger)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: ci-only-password
+          POSTGRES_DB: shifosafe_ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      CI_POSTGRES: "1"
+      DB_HOST: 127.0.0.1
+      DB_PORT: "5432"
+      DB_USER: postgres
+      DB_PASSWORD: ci-only-password
+      DB_NAME: shifosafe_ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Testlar
+        run: |
+          export SECRET_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(50))')"
+          export FIELD_ENCRYPTION_KEY="$(python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"
+          python manage.py test --settings=config.settings_test --noinput
+
+  security:
+    name: Zaifliklar va statik tahlil
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install pip-audit bandit
+      - name: pip-audit (kutubxonalardagi ma'lum zaifliklar - PyPI va OSV bazasi)
+        run: pip-audit -r requirements.txt --progress-spinner off
+      - name: bandit (koddagi xavfli naqshlar, o'rta va yuqori daraja)
+        run: bandit -r . -x ./.git,./*/tests.py,./*/tests_*.py,./*/migrations -ll -q

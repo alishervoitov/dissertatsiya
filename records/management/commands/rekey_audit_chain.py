@@ -57,6 +57,8 @@ class Command(BaseCommand):
             audit_chain.lock_chain()
             with connection.cursor() as cur:
                 if pg:
+                    # Kechiktirilgan FK tekshiruvlari ALTER TABLE ni to'smasin ("pending trigger events")
+                    cur.execute("SET CONSTRAINTS ALL IMMEDIATE")
                     cur.execute("ALTER TABLE records_auditlog DISABLE TRIGGER records_auditlog_guard_row")
                 prev = audit_chain.GENESIS
                 count = 0

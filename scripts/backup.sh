@@ -6,6 +6,9 @@
 # ma'lumotni ochib bo'lmaydi). Hammasi bitta arxivga yig'iladi va `age` bilan OCHIQ kalitga
 # shifrlanadi. Yopiq kalit serverda saqlanmaydi: server buzilsa ham zaxirani ochib bo'lmaydi.
 #
+# Nusxalar uch joyda: serverda (30 kun), administrator kompyuterida (pull_backups.ps1) va uchinchi joyda -
+# Telegram yoki bulut (scripts/offsite.sh).
+#
 # Sozlash: docs/BACKUP.md. Cron (har kuni 03:15):
 #   15 3 * * * bash /opt/medkarta/dissertatsiya/scripts/backup.sh >/dev/null 2>&1
 set -Eeuo pipefail
@@ -57,3 +60,9 @@ mv "$OUT.part" "$OUT"
 find "$BACKUP_DIR" -maxdepth 1 -name 'shifosafe-*.tar.age*' -mtime +"$KEEP_DAYS" -delete
 
 log "OK $(basename "$OUT") $(du -h "$OUT" | cut -f1) (jadvallar: $TABLES)"
+
+# 6. Uchinchi joy: Telegram va/yoki bulut (scripts/offsite.sh). Xato mahalliy nusxani bekor qilmaydi,
+# lekin skript 1 bilan tugaydi va administratorga Telegram orqali xabar ketadi.
+# shellcheck source=offsite.sh
+source "$(dirname "$0")/offsite.sh"
+offsite_upload "$OUT" || exit 1

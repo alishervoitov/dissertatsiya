@@ -97,10 +97,14 @@ def _enqueue(task, text):
 def alert_message(alert):
     actor = alert.actor.username if alert.actor else "—"
     role = f" ({esc(alert.actor_role, 20)})" if alert.actor_role else ""
+    action = {
+        alert.LOCKED: "\n⛔ Avtomatik javob: barcha sessiyalari yopildi, hisob siz ko'rib chiqmaguncha to'xtatildi.",
+        alert.LOGOUT: "\n⛔ Avtomatik javob: barcha sessiyalari yopildi (qayta kirishi kerak).",
+    }.get(alert.auto_response, "")
     return (
         f"{SEVERITY_ICON.get(alert.severity, '⚠️')} <b>ShifoSafe: {esc(alert.get_rule_display())}</b>\n"
         f"Xodim: {esc(actor, 64)}{role}\n"
-        f"{esc(alert.detail, 255)}\n"
+        f"{esc(alert.detail, 255)}{action}\n"
         f"{_now_local()}{_alerts_link()}"
     )
 

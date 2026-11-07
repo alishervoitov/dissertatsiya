@@ -245,3 +245,110 @@ class TelegramAlertTests(APITestCase):
             for _i in range(MAX_FAILED_ATTEMPTS):
                 r = self.login("tg_doc", "wrong")
         self.assertEqual(r.status_code, 401)
+
+
+@override_settings(SECURITY_ALERTS={"MASS_ACCESS_PATIENTS": 3, "MASS_ACCESS_MINUTES": 10, "EXPORT_COUNT": 2, "EXPORT_MINUTES": 30})
+@mock.patch("rest_framework.throttling.ScopedRateThrottle.allow_request", return_value=True)
+class AutoResponseTests(APITestCase):
+    """I3: yuqori darajali ogohlantirishda xodimning sessiyalari darhol yopiladi va hisob to'xtatiladi."""
+
+    PW = "Qx7#vTm2!pLz9w"
+
+    def setUp(self):
+        from django.core.cache import cache
+        cache.clear()
+        self.clock = mock.patch("django.utils.timezone.now", return_value=at(11))
+        self.now = self.clock.start()
+        self.addCleanup(self.clock.stop)
+        self.doctor = User.objects.create_user(username="ar_doc", password=self.PW, role=Role.DOCTOR, is_active_2fa=True)
+        self.admin = User.objects.create_user(username="ar_adm", password=self.PW, role=Role.ADMIN, is_active_2fa=True)
+        self.patients = [Patient.objects.get(user=User.objects.create_user(username=f"arp{i}", password="x",
+                                                                              role=Role.PATIENT)) for i in range(4)]
+
+    def session_for(self, user):
+        """Haqiqiy login kabi: refresh token + LoginSession; access tokenni qaytaradi."""
+        from rest_framework.test import APIRequestFactory
+        from users import sessions
+        from users.serializers import CustomTokenObtainPairSerializer
+        refresh = CustomTokenObtainPairSerializer.get_token(user)
+        sessions.start_session(APIRequestFactory().get("/"), user, refresh)
+        return str(refresh.access_token)
+
+    def me(self, access):
+        return self.client.get("/api/auth/me/", HTTP_AUTHORIZATION=f"Bearer {access}")
+
+    def mass_view(self, user):
+        for p in self.patients[:3]:
+            log_audit(user, "view", patient=p)
+
+    def login(self, user):
+        return self.client.post("/api/auth/login/", {"username": user.username, "password": self.PW}, format="json",
+                                HTTP_ACCEPT_LANGUAGE="uz")
+
+    def test_doctor_sessions_closed_and_account_locked_until_ack(self, _):
+        from users.models import LoginSession
+        access = self.session_for(self.doctor)
+        self.assertEqual(self.me(access).status_code, 200)
+        self.mass_view(self.doctor)
+        alert = SecurityAlert.objects.get(rule="mass_access")
+        self.assertEqual(alert.auto_response, "locked")
+        self.assertEqual(self.me(access).status_code, 401)                       # qo'ldagi token darhol o'ldi
+        self.assertFalse(LoginSession.objects.filter(user=self.doctor, revoked_at__isnull=True).exists())
+        r = self.login(self.doctor)                                               # to'g'ri parol bilan ham
+        self.assertEqual(r.status_code, 401)
+        self.assertIn("vaqtincha to'xtatildi", str(r.data["detail"]))
+        self.assertTrue(AuditLog.objects.filter(detail__startswith="Avtomatik javob: ar_doc - hisob to'xtatildi").exists())
+
+        self.client.force_authenticate(self.admin)
+        self.assertEqual(self.client.post(f"/api/monitoring/alerts/{alert.id}/ack/").data["auto_response"], "locked")
+        self.client.force_authenticate(None)
+        self.assertIn("access", self.login(self.doctor).data)                    # ko'rib chiqilgach tiklandi
+        self.assertTrue(AuditLog.objects.filter(actor=self.admin, detail="Hisob qayta faollashtirildi: ar_doc").exists())
+
+    def test_wrong_password_does_not_reveal_suspension(self, _):
+        self.mass_view(self.doctor)
+        r = self.client.post("/api/auth/login/", {"username": "ar_doc", "password": "wrong"}, format="json",
+                             HTTP_ACCEPT_LANGUAGE="uz")
+        self.assertNotIn("to'xtatildi", str(r.data))
+        ru = self.client.post("/api/auth/login/", {"username": "ar_doc", "password": self.PW}, format="json",
+                              HTTP_ACCEPT_LANGUAGE="ru")
+        self.assertIn("временно приостановлена", str(ru.data["detail"]))
+
+    def test_admin_only_logged_out_not_locked(self, _):
+        access = self.session_for(self.admin)
+        self.mass_view(self.admin)
+        self.assertEqual(SecurityAlert.objects.get().auto_response, "logout")
+        self.assertEqual(self.me(access).status_code, 401)
+        self.assertIn("access", self.login(self.admin).data)                     # o'zini bloklab qo'ymaydi
+
+    def test_medium_alert_has_no_response(self, _):
+        access = self.session_for(self.doctor)
+        self.now.return_value = at(23)
+        log_audit(self.doctor, "view", patient=self.patients[0])
+        self.assertEqual(SecurityAlert.objects.get(rule="off_hours").auto_response, "")
+        self.assertEqual(self.me(access).status_code, 200)
+
+    @override_settings(SECURITY_ALERTS={"MASS_ACCESS_PATIENTS": 3, "AUTO_SUSPEND_RULES": ()})
+    def test_can_be_disabled(self, _):
+        access = self.session_for(self.doctor)
+        self.mass_view(self.doctor)
+        self.assertEqual(SecurityAlert.objects.get(rule="mass_access").auto_response, "")
+        self.assertEqual(self.me(access).status_code, 200)
+
+    def test_pending_2fa_step_is_blocked_too(self, _):
+        from users import mfa
+        from users.models import TwoFactorDevice
+        TwoFactorDevice.objects.create(user=self.doctor, secret=mfa.new_secret(), confirmed_at=at(9))
+        token = self.login(self.doctor).data["mfa_token"]                          # parol bosqichi o'tdi
+        self.mass_view(self.doctor)                                              # shu orada hisob to'xtatildi
+        code = mfa.totp_at(TwoFactorDevice.objects.get(user=self.doctor).secret, mfa.current_step())
+        r = self.client.post("/api/auth/login/2fa/", {"mfa_token": token, "code": code}, format="json")
+        self.assertEqual((r.status_code, r.data["code"]), (403, "account_suspended"))
+
+    @override_settings(TELEGRAM_BOT_TOKEN="123:SECRET", TELEGRAM_AUDIT_CHAT_ID="42")
+    def test_telegram_message_mentions_response(self, _):
+        sent = []
+        with mock.patch("monitoring.telegram.send", side_effect=lambda text, chat: sent.append(text) or 1), \
+                self.captureOnCommitCallbacks(execute=True):
+            self.mass_view(self.doctor)
+        self.assertIn("hisob siz ko'rib chiqmaguncha to'xtatildi", sent[0])

@@ -22,6 +22,8 @@ DEFAULTS = {
     "EXPORT_MINUTES": 30,
     "NIGHT_START_HOUR": 22,
     "NIGHT_END_HOUR": 6,
+    # Yuqori darajali shu qoidalarda xodimning sessiyalari darhol yopiladi va hisob to'xtatiladi
+    "AUTO_SUSPEND_RULES": ("mass_access", "bulk_export"),
 }
 STAFF_ROLES = ("doctor", "admin", "lab")
 DATA_ACTIONS = ("view", "export", "update", "delete", "create")
@@ -48,11 +50,15 @@ def _raise(rule, severity, actor, now, window, detail, count=1, dedupe_since=Non
         alert.detail = detail
         alert.save(update_fields=["count", "last_seen", "detail"])
         return alert
+    from .response import planned_response, apply_response
+
+    response = planned_response(rule, severity, actor)
     alert = SecurityAlert.objects.create(
         rule=rule, severity=severity, actor=actor, actor_role=actor.role, count=count,
-        detail=detail, first_seen=now, last_seen=now,
+        detail=detail, first_seen=now, last_seen=now, auto_response=response,
     )
     security_logger.warning("XAVFSIZLIK OGOHLANTIRISHI | rule=%s actor=%s detail=%s", rule, actor.username, detail)
+    apply_response(alert)
     return alert
 
 

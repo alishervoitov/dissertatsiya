@@ -17,3 +17,6 @@ msgstr "Это поле не может быть пустым."
 
 msgid "The new password must differ from the temporary one."
 msgstr "Новый пароль должен отличаться от временного."
+
+msgid "Your account has been temporarily suspended for a security review. Please contact the administrator."
+msgstr "Ваша учётная запись временно приостановлена для проверки безопасности. Обратитесь к администратору."

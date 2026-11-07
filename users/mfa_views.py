@@ -70,6 +70,9 @@ class MfaLoginView(APIView):
                             status.HTTP_401_UNAUTHORIZED)
             return Response({"detail": "Kod noto'g'ri.", "code": "mfa_invalid", "attempts_left": left},
                             status=status.HTTP_400_BAD_REQUEST)
+        from monitoring.response import SUSPENDED_MESSAGE, is_suspended
+        if is_suspended(user):
+            return _bad(SUSPENDED_MESSAGE, "account_suspended", status.HTTP_403_FORBIDDEN)
         mfa.consume_login_token(nonce)
         data = issue_tokens(request, user)
         refresh = data.pop("refresh")

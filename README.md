@@ -200,6 +200,12 @@ Shu bot shubhali hodisalarni ham darhol administratorga yuboradi (`monitoring/no
 - 2FA kodi 5 marta noto'g'ri — parol to'g'ri kiritilgan, ya'ni oshkor bo'lgan bo'lishi mumkin;
 - zaxira kod bilan kirish.
 
+**Avtomatik javob (`monitoring/response.py`).** Yuqori darajali «ko'p bemor kartasi» yoki «ko'p eksport»
+ogohlantirishida xodimning barcha sessiyalari darhol yopiladi (qo'lidagi token keyingi so'rovda rad etiladi)
+va hisob administrator ogohlantirishni «Ko'rib chiqildi — hisobni tiklash» bilan yopmaguncha to'xtatiladi:
+to'g'ri parol va 2FA bilan ham kira olmaydi. Administrator hisobi to'xtatilmaydi (o'zini bloklab qo'ymasligi
+uchun), faqat sessiyalari yopiladi. O'chirish: `SECURITY_ALERTS = {"AUTO_SUSPEND_RULES": ()}`.
+
 Foydalanuvchi kiritgan matn HTML-escape qilinadi; 10 daqiqada ko'pi bilan 20 ta xabar (ko'proq bo'lsa bitta
 «juda ko'p hodisa» xabari). Yuborish Celery'da — Telegram ishlamasa ham sayt ishlayveradi.
 Alohida chat kerak bo'lsa: `TELEGRAM_ALERT_CHAT_ID` (bo'sh bo'lsa audit chatiga).

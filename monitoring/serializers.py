@@ -10,7 +10,7 @@ class SecurityAlertSerializer(serializers.ModelSerializer):
     class Meta:
         model = SecurityAlert
         fields = ["id", "rule", "severity", "status", "actor", "actor_name", "actor_role", "count", "detail",
-                  "first_seen", "last_seen", "acknowledged_by_name", "acknowledged_at"]
+                  "first_seen", "last_seen", "acknowledged_by_name", "acknowledged_at", "auto_response"]
 
     def get_actor_name(self, obj):
         return (obj.actor.get_full_name() or obj.actor.username) if obj.actor else None

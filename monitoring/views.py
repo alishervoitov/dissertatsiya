@@ -44,4 +44,8 @@ class AlertAckView(APIView):
             alert.acknowledged_at = timezone.now()
             alert.save(update_fields=["status", "acknowledged_by", "acknowledged_at"])
             log_audit(request.user, "update", detail=f"Xavfsizlik ogohlantirishi ko'rib chiqildi: #{alert.id} {alert.rule}")
+            if alert.auto_response == SecurityAlert.LOCKED and alert.actor:
+                from .response import is_suspended
+                if not is_suspended(alert.actor):
+                    log_audit(request.user, "update", detail=f"Hisob qayta faollashtirildi: {alert.actor.username}")
         return Response(SecurityAlertSerializer(alert).data)

@@ -39,6 +39,10 @@ class SecurityAlert(models.Model):
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="+",
     )
     acknowledged_at = models.DateTimeField(null=True, blank=True)
+    # Avtomatik javob (monitoring/response.py): "locked" - sessiyalar yopildi va ogohlantirish
+    # ko'rib chiqilguncha kirish taqiqlandi; "logout" - faqat sessiyalar yopildi (administrator).
+    LOCKED, LOGOUT = "locked", "logout"
+    auto_response = models.CharField(max_length=10, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

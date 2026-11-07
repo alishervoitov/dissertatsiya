@@ -179,6 +179,12 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
 
         clear_login_failures(username, ident)
 
+        from monitoring.response import SUSPENDED_MESSAGE, is_suspended
+        if is_suspended(self.user):
+            # Parol to'g'ri bo'lgandagina aytiladi - hisob borligi begona odamga oshkor bo'lmaydi
+            security_logger.warning("To'xtatilgan hisobga kirish urinishi: %r (IP: %s)", username, ident)
+            raise AuthenticationFailed(SUSPENDED_MESSAGE, code="account_suspended")
+
         if self.user.must_change_password:
             # Registratura bergan vaqtinchalik parol: token yo'q, avval yangi parol (users/temp_password.py)
             from . import temp_password

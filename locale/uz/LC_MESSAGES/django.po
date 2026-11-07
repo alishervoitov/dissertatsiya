@@ -59,3 +59,6 @@ msgstr "Bu maydonni to'ldiring."
 
 msgid "The new password must differ from the temporary one."
 msgstr "Yangi parol vaqtinchalik paroldan farq qilishi kerak."
+
+msgid "Your account has been temporarily suspended for a security review. Please contact the administrator."
+msgstr "Hisobingiz xavfsizlik tekshiruvi uchun vaqtincha to'xtatildi. Administratorga murojaat qiling."

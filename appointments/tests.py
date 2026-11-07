@@ -662,6 +662,15 @@ class RegistryTempPasswordTests(QueueTestBase):
         self.assertFalse(row["has_login"])
         self.assertIsNotNone(row["temp_password_expires"])
 
+    def test_patient_card_shows_login_state_to_admin_only(self, _):
+        url = f"/api/records/patients/{self.pid}/"
+        self.assertEqual(self.client.get(url).data["login"], {"has_login": False, "temp_password_expires": None})
+        self.issue()
+        self.assertIsNotNone(self.client.get(url).data["login"]["temp_password_expires"])
+        pu = User.objects.get(username=self.username)
+        self.client.force_authenticate(pu)
+        self.assertIsNone(self.client.get(url).data["login"])
+
     def test_only_admin_and_only_patients(self, _):
         self.client.force_authenticate(self.doctor)
         self.assertEqual(self.client.post(f"/api/queue/registry/patients/{self.pid}/temp-password/").status_code, 403)

@@ -9,13 +9,14 @@ class PatientSerializer(serializers.ModelSerializer):
     primary_doctor_name = serializers.SerializerMethodField()
     records_count = serializers.SerializerMethodField()
     photo_updated_at = serializers.SerializerMethodField()
+    login = serializers.SerializerMethodField()
 
     class Meta:
         model = Patient
         fields = [
             "id", "user", "date_of_birth", "gender", "national_id", "address",
             "emergency_contact", "blood_type", "allergies", "primary_doctor",
-            "primary_doctor_name", "records_count", "created_at", "updated_at", "photo_updated_at",
+            "primary_doctor_name", "records_count", "created_at", "updated_at", "photo_updated_at", "login",
         ]
         read_only_fields = ["id", "created_at", "updated_at"]
 
@@ -24,6 +25,17 @@ class PatientSerializer(serializers.ModelSerializer):
 
     def get_records_count(self, obj):
         return obj.records.count()
+
+    def get_login(self, obj):
+        """Ilovaga kirish holati - faqat administrator uchun (vaqtinchalik parol berish tugmasi)."""
+        request = self.context.get("request")
+        if not request or getattr(request.user, "role", None) != "admin":
+            return None
+        u = obj.user
+        return {
+            "has_login": u.has_usable_password() and not u.must_change_password,
+            "temp_password_expires": u.temp_password_expires if u.must_change_password else None,
+        }
 
     def get_photo_updated_at(self, obj):
         # Rasm baytlarini yuklamasdan faqat vaqtini olamiz (keshni yangilash uchun)

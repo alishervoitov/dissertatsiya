@@ -6,6 +6,7 @@ urlpatterns = [
     path("register/", views.RegisterView.as_view(), name="register"),
     path("login/", views.LoginView.as_view(), name="login"),
     path("login/2fa/", mfa_views.MfaLoginView.as_view(), name="login-2fa"),
+    path("login/set-password/", views.TempPasswordChangeView.as_view(), name="login-set-password"),
     path("2fa/", mfa_views.MfaStatusView.as_view(), name="mfa-status"),
     path("2fa/setup/", mfa_views.MfaSetupView.as_view(), name="mfa-setup"),
     path("2fa/confirm/", mfa_views.MfaConfirmView.as_view(), name="mfa-confirm"),

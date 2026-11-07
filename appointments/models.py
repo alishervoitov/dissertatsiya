@@ -134,3 +134,31 @@ class PrintedCheckinCode(models.Model):
 
     def __str__(self):
         return f"QR {self.date} ({'faol' if self.active else 'bekor'})"
+
+
+class KioskDevice(models.Model):
+    """Shifoxonadagi kiosk ekrani va uning maxfiy kaliti (appointments/kiosks.py).
+
+    Kalitning o'zi saqlanmaydi - faqat SHA-256 xeshi (kalit 192 bit tasodifiy, shuning uchun
+    sekin xesh shart emas). Har bir kioskning o'z kaliti bor: bittasi yo'qolsa yoki o'g'irlansa,
+    faqat shu kiosk bekor qilinadi, qolganlari ishlayveradi."""
+
+    name = models.CharField(max_length=80)
+    key_hash = models.CharField(max_length=64, unique=True)
+    key_prefix = models.CharField(max_length=12, help_text="Kalitning boshi - ro'yxatda tanib olish uchun")
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="+",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    last_used_at = models.DateTimeField(null=True, blank=True)
+    last_ip = models.GenericIPAddressField(null=True, blank=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    revoked_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="+",
+    )
+
+    class Meta:
+        ordering = ["revoked_at", "-created_at"]
+
+    def __str__(self):
+        return f"{self.name} ({'bekor' if self.revoked_at else 'faol'})"

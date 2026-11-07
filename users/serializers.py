@@ -23,6 +23,8 @@ USERNAME_TAKEN_MESSAGE = "Bu foydalanuvchi nomi band, boshqasini tanlang."
 USERNAME_RESERVED_MESSAGE = "Bu foydalanuvchi nomidan foydalanib bo'lmaydi."
 # Noto'g'ri parol, mavjud bo'lmagan hisob va bloklangan hisob uchun bir xil javob (5-band).
 LOGIN_FAILED_MESSAGE = "Login yoki parol noto'g'ri, yoki hisob vaqtincha bloklangan."
+TEMP_PASSWORD_EXPIRED_MESSAGE = ("Vaqtinchalik parolning muddati tugagan. "
+                                 "Yangi parol olish uchun registraturaga murojaat qiling.")
 
 
 CASE_INSENSITIVE_USERNAME_VALIDATORS = [
@@ -176,6 +178,13 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
             raise AuthenticationFailed(LOGIN_FAILED_MESSAGE, code="login_failed")
 
         clear_login_failures(username, ident)
+
+        if self.user.must_change_password:
+            # Registratura bergan vaqtinchalik parol: token yo'q, avval yangi parol (users/temp_password.py)
+            from . import temp_password
+            if temp_password.is_expired(self.user):
+                raise AuthenticationFailed(TEMP_PASSWORD_EXPIRED_MESSAGE, code="temp_password_expired")
+            return {"password_change_required": True, "pw_token": temp_password.issue_change_token(self.user)}
 
         from . import mfa
         if mfa.enabled_device(self.user):

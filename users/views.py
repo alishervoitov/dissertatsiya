@@ -83,6 +83,10 @@ class LoginView(TokenObtainPairView):
                 client_ident(request),
             )
             raise
+        if response.data.get("password_change_required"):
+            security_logger.info("Vaqtinchalik parol bilan kirish, yangi parol kutilmoqda: %r (IP: %s)",
+                                 request.data.get("username"), client_ident(request))
+            return response
         if response.data.get("mfa_required"):
             security_logger.info("Parol to'g'ri, 2FA kodi kutilmoqda: %r (IP: %s)",
                                  request.data.get("username"), client_ident(request))
@@ -279,8 +283,10 @@ class PasswordResetConfirmView(APIView):
             return Response({"detail": list(e.messages)}, status=status.HTTP_400_BAD_REQUEST)
 
         with transaction.atomic():
+            from . import temp_password
             user.set_password(new_password)
-            user.save(update_fields=["password"])
+            temp_password.clear(user)
+            user.save(update_fields=["password", "must_change_password", "temp_password_expires"])
             # Hisobni egallagan kishi parol tiklangach ham sessiyada qolmasin (7-band)
             revoked = revoke_refresh_tokens(user)
 
@@ -376,3 +382,45 @@ class SessionRevokeOthersView(APIView):
         security_logger.info("Boshqa qurilmalardan chiqildi: user_id=%s, %s ta sessiya (IP: %s)",
                              request.user.pk, count, client_ident(request))
         return Response({"revoked": count})
+
+
+class TempPasswordChangeView(APIView):
+    """POST {pw_token, new_password} - vaqtinchalik parol bilan kirgan bemor doimiy parol o'rnatadi.
+    Shundan keyingina sessiya ochiladi (2FA yoqilgan bo'lsa - 2FA bosqichi)."""
+
+    authentication_classes = []
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "mfa"
+
+    def post(self, request):
+        from . import mfa, temp_password
+        from .mfa_views import issue_tokens
+
+        parsed = temp_password.read_change_token(request.data.get("pw_token"))
+        if not parsed:
+            return Response({"detail": "Kirish muddati tugadi. Login va vaqtinchalik parolni qaytadan kiriting.",
+                             "code": "pw_token_expired"}, status=status.HTTP_401_UNAUTHORIZED)
+        user, nonce = parsed
+        new_password = request.data.get("new_password") or ""
+        if user.check_password(new_password):
+            return Response({"detail": ["Yangi parol vaqtinchalik paroldan farq qilishi kerak."]},
+                            status=status.HTTP_400_BAD_REQUEST)
+        try:
+            validate_password(new_password, user=user)
+        except DjangoValidationError as e:
+            return Response({"detail": list(e.messages)}, status=status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic():
+            user.set_password(new_password)
+            temp_password.clear(user)
+            user.save(update_fields=["password", "must_change_password", "temp_password_expires"])
+            revoke_refresh_tokens(user)
+        temp_password.consume_change_token(nonce)
+        security_logger.info("Vaqtinchalik parol doimiysiga almashtirildi: %r (IP: %s)", user.username, client_ident(request))
+
+        if mfa.enabled_device(user):
+            return Response({"mfa_required": True, "mfa_token": mfa.issue_login_token(user)})
+        data = issue_tokens(request, user)
+        refresh = data.pop("refresh")
+        return set_refresh_cookie(Response(data), refresh)

@@ -23,6 +23,10 @@ class User(AbstractUser):
         default=False, help_text="Kelajakda ikki bosqichli autentifikatsiya uchun"
     )
     created_at = models.DateTimeField(auto_now_add=True)
+    # Registratura bergan vaqtinchalik parol (users/temp_password.py): birinchi kirishda
+    # yangi parol o'rnatilmaguncha token berilmaydi, muddati o'tsa parol ishlamaydi.
+    must_change_password = models.BooleanField(default=False)
+    temp_password_expires = models.DateTimeField(null=True, blank=True)
 
     class Meta(AbstractUser.Meta):
         constraints = [

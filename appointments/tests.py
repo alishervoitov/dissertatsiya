@@ -618,3 +618,176 @@ class RegistryIdentifyTests(QueueTestBase):
                                           {"patient": self.patient.id}, format="json").status_code, 404)
         self.client.force_authenticate(self.doctor)
         self.assertEqual(self.client.get(f"/api/records/patients/{self.anvar.id}/").status_code, 200)
+
+
+@mock.patch("rest_framework.throttling.ScopedRateThrottle.allow_request", return_value=True)
+class RegistryTempPasswordTests(QueueTestBase):
+    """Registratura bemorga vaqtinchalik parol beradi; bemor birinchi kirishda o'z parolini o'rnatadi."""
+
+    NEW_PW = "Qx7#vTm2!pLz9w"
+
+    def setUp(self):
+        super().setUp()
+        self.client.force_authenticate(self.admin)
+        r = self.client.post("/api/queue/registry/patients/",
+                             {"first_name": "Dilnoza", "last_name": "Usmonova", "date_of_birth": "1995-03-08"},
+                             format="json")
+        self.pid, self.username = r.data["id"], r.data["username"]
+
+    def issue(self, pid=None):
+        self.client.force_authenticate(self.admin)
+        return self.client.post(f"/api/queue/registry/patients/{pid or self.pid}/temp-password/")
+
+    def login(self, password, username=None):
+        self.client.force_authenticate(None)
+        return self.client.post("/api/auth/login/", {"username": username or self.username, "password": password},
+                                format="json")
+
+    def set_password(self, token, pw):
+        return self.client.post("/api/auth/login/set-password/", {"pw_token": token, "new_password": pw}, format="json")
+
+    def test_issue_shows_password_once_and_audits(self, _):
+        r = self.issue()
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r["Cache-Control"], "no-store")
+        pw = r.data["temp_password"]
+        self.assertRegex(pw, r"^[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}$")
+        self.assertEqual((r.data["username"], r.data["hours"]), (self.username, 72))
+        u = User.objects.get(username=self.username)
+        self.assertNotIn(pw, u.password)                               # faqat xesh
+        self.assertTrue(u.must_change_password)
+        log = AuditLog.objects.get(actor=self.admin, detail__startswith="Vaqtinchalik parol berildi")
+        self.assertNotIn(pw, log.detail)
+        row = self.client.get("/api/queue/registry/patients/", {"q": "Usmonova"}).data[0]
+        self.assertFalse(row["has_login"])
+        self.assertIsNotNone(row["temp_password_expires"])
+
+    def test_only_admin_and_only_patients(self, _):
+        self.client.force_authenticate(self.doctor)
+        self.assertEqual(self.client.post(f"/api/queue/registry/patients/{self.pid}/temp-password/").status_code, 403)
+        self.assertEqual(self.issue(pid=99999).status_code, 404)
+        # Shifokor hisobiga Patient yozuvi qo'lda bog'langan bo'lsa ham - rad etiladi
+        from records.models import Patient
+        p = Patient.objects.get(pk=self.pid)
+        p.user.role = Role.DOCTOR
+        p.user.save(update_fields=["role"])
+        self.assertEqual(self.issue().status_code, 404)
+
+    def test_temp_login_gives_no_tokens_until_password_set(self, _):
+        pw = self.issue().data["temp_password"]
+        r = self.login(pw)
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.data["password_change_required"])
+        self.assertNotIn("access", r.data)
+        self.assertNotIn("sm_refresh", r.cookies)
+        token = r.data["pw_token"]
+        weak = self.set_password(token, "123")
+        self.assertEqual(weak.status_code, 400)
+        same = self.set_password(token, pw)
+        self.assertIn("farq qilishi", same.data["detail"][0])
+        ok = self.set_password(token, self.NEW_PW)
+        self.assertEqual(ok.status_code, 200, ok.data)
+        self.assertIn("access", ok.data)
+        self.assertTrue(ok.cookies["sm_refresh"]["httponly"])
+        self.assertEqual(self.set_password(token, "Zz9!another-pass").status_code, 401)   # bir martalik
+        self.assertEqual(self.login(pw).status_code, 401)                                 # eski parol o'ldi
+        r = self.login(self.NEW_PW)
+        self.assertIn("access", r.data)
+        u = User.objects.get(username=self.username)
+        self.assertEqual((u.must_change_password, u.temp_password_expires), (False, None))
+
+    def test_expired_temp_password(self, _):
+        pw = self.issue().data["temp_password"]
+        self.now.return_value = at(10, 0) + timedelta(hours=73)
+        r = self.login(pw)
+        self.assertEqual(r.status_code, 401)
+        self.assertIn("registraturaga", str(r.data["detail"]))
+
+    def test_reissue_revokes_old_password_and_sessions(self, _):
+        from users.models import LoginSession
+        pw = self.issue().data["temp_password"]
+        token = self.login(pw).data["pw_token"]
+        self.set_password(token, self.NEW_PW)
+        self.assertEqual(LoginSession.objects.filter(user__username=self.username, revoked_at__isnull=True).count(), 1)
+        r = self.issue()                                             # parolini unutdi
+        self.assertIn("oldingi parol bekor qilindi", AuditLog.objects.filter(
+            detail__startswith="Vaqtinchalik parol").order_by("-id").first().detail)
+        self.assertEqual(LoginSession.objects.filter(user__username=self.username, revoked_at__isnull=True).count(), 0)
+        self.assertEqual(self.login(self.NEW_PW).status_code, 401)    # unutilgan eski parol endi ishlamaydi
+        self.assertTrue(self.login(r.data["temp_password"]).data["password_change_required"])
+
+    def test_token_tampering_rejected(self, _):
+        pw = self.issue().data["temp_password"]
+        token = self.login(pw).data["pw_token"]
+        self.assertEqual(self.set_password(token + "x", self.NEW_PW).status_code, 401)
+        self.issue()                                                 # yangi parol -> eski token yaroqsiz
+        self.assertEqual(self.set_password(token, self.NEW_PW).status_code, 401)
+
+    def test_2fa_patient_still_needs_code(self, _):
+        from users import mfa
+        from users.models import TwoFactorDevice
+        u = User.objects.get(username=self.username)
+        TwoFactorDevice.objects.create(user=u, secret=mfa.new_secret(), confirmed_at=at(9, 0))
+        u.is_active_2fa = True
+        u.save()
+        pw = self.issue().data["temp_password"]
+        r = self.set_password(self.login(pw).data["pw_token"], self.NEW_PW)
+        self.assertTrue(r.data["mfa_required"])
+        self.assertNotIn("access", r.data)
+
+
+@override_settings(QUEUE_KIOSK_KEY="")
+class KioskDeviceTests(QueueTestBase):
+    """Kiosk kalitlari administrator panelidan: alohida kalit, bir marta ko'rsatiladi, darhol bekor qilinadi."""
+
+    def create(self, name="Kirish zali"):
+        self.client.force_authenticate(self.admin)
+        return self.client.post("/api/queue/kiosks/", {"name": name}, format="json")
+
+    def kiosk_get(self, key):
+        self.client.force_authenticate(None)
+        return self.client.get("/api/queue/kiosk/doctors/", HTTP_X_KIOSK_KEY=key)
+
+    def test_create_use_and_revoke(self):
+        from .models import KioskDevice
+        r = self.create()
+        self.assertEqual(r.status_code, 201)
+        self.assertEqual(r["Cache-Control"], "no-store")
+        key = r.data["key"]
+        self.assertTrue(key.startswith("ks_") and len(key) > 30)
+        d = KioskDevice.objects.get()
+        self.assertNotIn(key, (d.key_hash, d.key_prefix))                # kalitning o'zi saqlanmaydi
+        self.assertEqual(self.kiosk_get(key).status_code, 200)
+        d.refresh_from_db()
+        self.assertIsNotNone(d.last_used_at)
+        listing = self.client.force_authenticate(self.admin) or self.client.get("/api/queue/kiosks/").data
+        self.assertNotIn("key", listing["results"][0])                   # ro'yxatda kalit yo'q
+        self.assertFalse(listing["legacy_key_active"])
+        self.assertEqual(self.client.post(f"/api/queue/kiosks/{d.id}/revoke/").status_code, 200)
+        self.assertEqual(self.kiosk_get(key).status_code, 403)           # darhol
+        self.assertTrue(AuditLog.objects.filter(actor=self.admin, detail__startswith="Kiosk kaliti yaratildi").exists())
+        self.assertTrue(AuditLog.objects.filter(actor=self.admin, detail__startswith="Kiosk kaliti bekor").exists())
+
+    def test_keys_are_independent(self):
+        k1, k2 = self.create("A").data["key"], self.create("B").data["key"]
+        from .models import KioskDevice
+        self.client.post(f"/api/queue/kiosks/{KioskDevice.objects.get(name='A').id}/revoke/")
+        self.assertEqual(self.kiosk_get(k1).status_code, 403)
+        self.assertEqual(self.kiosk_get(k2).status_code, 200)
+
+    def test_wrong_or_missing_key(self):
+        self.create()
+        for key in ("", "ks_wrong", "x" * 500):
+            self.assertEqual(self.kiosk_get(key).status_code, 403)
+
+    def test_only_admin(self):
+        self.client.force_authenticate(self.doctor)
+        self.assertEqual(self.client.get("/api/queue/kiosks/").status_code, 403)
+        self.assertEqual(self.client.post("/api/queue/kiosks/", {"name": "x"}, format="json").status_code, 403)
+        self.assertEqual(self.create(name="   ").status_code, 400)
+
+    @override_settings(QUEUE_KIOSK_KEY="legacy-key")
+    def test_legacy_env_key_still_works(self):
+        self.assertEqual(self.kiosk_get("legacy-key").status_code, 200)
+        self.client.force_authenticate(self.admin)
+        self.assertTrue(self.client.get("/api/queue/kiosks/").data["legacy_key_active"])

@@ -204,6 +204,22 @@ Foydalanuvchi kiritgan matn HTML-escape qilinadi; 10 daqiqada ko'pi bilan 20 ta 
 «juda ko'p hodisa» xabari). Yuborish Celery'da — Telegram ishlamasa ham sayt ishlayveradi.
 Alohida chat kerak bo'lsa: `TELEGRAM_ALERT_CHAT_ID` (bo'sh bo'lsa audit chatiga).
 
+### Registraturada vaqtinchalik parol
+
+Registraturada ochilgan yoki parolini unutgan bemorga registrator bemor kartasidan «Parol berish» orqali
+vaqtinchalik parol beradi (`users/temp_password.py`). Parol (`XXXX-XXXX-XXXX`, ~59 bit) faqat bir marta
+ko'rsatiladi va qog'ozga chop etiladi; bazada faqat xeshi. U 72 soat amal qiladi va u bilan hech qanday
+API'ga kirib bo'lmaydi: birinchi kirishda bemor o'z parolini o'rnatmaguncha token berilmaydi. Faqat bemor
+hisoblari uchun (registrator shifokor yoki admin hisobini shu yo'l bilan egallay olmaydi); yangi parol
+berilganda bemorning barcha sessiyalari yopiladi, har bir berilish auditga yoziladi.
+
+### Kiosk kalitlari
+
+Har bir kiosk ekrani o'z kaliti bilan ishlaydi (`appointments/kiosks.py`, Registratura → «Kiosk kalitlari»).
+Kalit bir marta ko'rsatiladi, bazada SHA-256 xeshi; bekor qilish darhol kuchga kiradi, oxirgi faollik va
+IP ko'rinadi. Eski umumiy `QUEUE_KIOSK_KEY` o'tish davri uchun ishlaydi — barcha kiosklar yangi kalitlarga
+o'tgach `.env.docker` dan o'chiring.
+
 ## Uzluksiz integratsiya (CI)
 
 Har bir push va pull request'da GitHub Actions quyidagilarni avtomatik bajaradi (`.github/workflows/ci.yml`):

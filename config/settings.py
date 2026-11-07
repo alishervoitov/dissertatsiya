@@ -166,6 +166,7 @@ REST_FRAMEWORK = {
         "patient_photo": "30/hour",
         # 2FA: kod kiritish (har bir mfa_token ga qo'shimcha 5 urinish chegarasi bor) va sozlash
         "mfa": "10/min",
+        "temp_password": "30/hour",
         "mfa_manage": "30/hour",
     },
     "DEFAULT_RENDERER_CLASSES": (

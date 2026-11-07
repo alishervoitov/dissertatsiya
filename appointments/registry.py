@@ -14,6 +14,7 @@ from django.db import transaction
 from django.db.models import Q
 from rest_framework import serializers, status
 from rest_framework.response import Response
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from records.audit import log_audit
@@ -39,7 +40,9 @@ def patient_brief(p):
         "gender": p.gender,
         "phone": u.phone,
         # Registraturada ochilgan va hali ilovaga kirmagan bemor
-        "has_login": u.has_usable_password(),
+        "has_login": u.has_usable_password() and not u.must_change_password,
+        # Vaqtinchalik parol berilgan, bemor hali o'z parolini o'rnatmagan
+        "temp_password_expires": u.temp_password_expires if u.must_change_password else None,
         # Registrator yuzini rasm bilan solishtirib, to'g'ri bemor tanlanganini tekshiradi
         "photo_updated_at": getattr(p, "photo_updated_at", None),
     }
@@ -104,7 +107,7 @@ def _new_username():
 
 class RegistryPatientView(APIView):
     """GET ?q=ism|familiya|telefon&dob=YYYY-MM-DD - bemorni topish.
-    POST - bazada yo'q bemorni registraturada ochish (paroli yo'q, keyin o'zi tiklaydi)."""
+    POST - bazada yo'q bemorni registraturada ochish (paroli yo'q; kirish uchun vaqtinchalik parol beriladi)."""
 
     permission_classes = [IsAdmin]
 
@@ -176,3 +179,38 @@ class RegistryLinkTicketView(APIView):
         log_audit(request.user, "update", patient=patient,
                   detail=f"Navbat chiptasi bemorga bog'landi: №{ticket.number}, {doctor}")
         return Response(_ticket_doctor_data(ticket))
+
+
+class RegistryTempPasswordView(APIView):
+    """POST - bemorga vaqtinchalik parol berish (yangi karta yoki parolini unutgan bemor).
+    Parol javobda bir marta ko'rsatiladi, bazada faqat xeshi; bemorning barcha sessiyalari yopiladi."""
+
+    permission_classes = [IsAdmin]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "temp_password"
+
+    def post(self, request, pk):
+        from users import temp_password
+        from users.security import revoke_refresh_tokens
+
+        patient = Patient.objects.select_related("user").filter(pk=pk, user__is_active=True).first()
+        # Faqat bemor hisobi: registrator shu yo'l bilan shifokor yoki admin hisobini egallay olmasin
+        if not patient or patient.user.role != Role.PATIENT:
+            return Response({"detail": "Bemor topilmadi."}, status=status.HTTP_404_NOT_FOUND)
+        user = patient.user
+        had_login = user.has_usable_password() and not user.must_change_password
+        with transaction.atomic():
+            password, expires = temp_password.issue(user)
+            revoked = revoke_refresh_tokens(user)
+        log_audit(request.user, "update", patient=patient,
+                  detail=(f"Vaqtinchalik parol berildi ({temp_password.TEMP_PASSWORD_HOURS} soat"
+                          f"{', oldingi parol bekor qilindi' if had_login else ''}, {revoked} ta sessiya yopildi)"))
+        response = Response({
+            "username": user.username,
+            "full_name": user.get_full_name() or user.username,
+            "temp_password": password,
+            "expires_at": expires,
+            "hours": temp_password.TEMP_PASSWORD_HOURS,
+        })
+        response["Cache-Control"] = "no-store"
+        return response

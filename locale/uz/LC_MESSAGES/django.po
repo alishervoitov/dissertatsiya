@@ -1,0 +1,61 @@
+# ShifoSafe: Django tarjima katalogida o'zbekcha bo'lmagan xabarlar (parol tekshiruvi va h.k.).
+# Yangilash: .po faylni tahrirlang, so'ng `python manage.py compilemessages -l uz` (yoki scripts/compile_locale.py).
+msgid ""
+msgstr ""
+"Project-Id-Version: ShifoSafe\n"
+"Language: uz\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+
+#, python-format
+msgid "This password is too short. It must contain at least %d character."
+msgid_plural "This password is too short. It must contain at least %d characters."
+msgstr[0] "Parol juda qisqa. U kamida %d ta belgidan iborat bo'lishi kerak."
+
+#, python-format
+msgid "Your password must contain at least %(min_length)d character."
+msgid_plural "Your password must contain at least %(min_length)d characters."
+msgstr[0] "Parol kamida %(min_length)d ta belgidan iborat bo'lishi kerak."
+
+#, python-format
+msgid "The password is too similar to the %(verbose_name)s."
+msgstr "Parol «%(verbose_name)s» maydoniga juda o'xshash."
+
+msgid "Your password can’t be too similar to your other personal information."
+msgstr "Parol shaxsiy ma'lumotlaringizga juda o'xshash bo'lmasligi kerak."
+
+msgid "This password is too common."
+msgstr "Bu parol juda keng tarqalgan, uni osongina taxmin qilish mumkin."
+
+msgid "Your password can’t be a commonly used password."
+msgstr "Keng tarqalgan paroldan foydalanib bo'lmaydi."
+
+msgid "This password is entirely numeric."
+msgstr "Parol faqat raqamlardan iborat bo'lmasligi kerak."
+
+msgid "Your password can’t be entirely numeric."
+msgstr "Parol faqat raqamlardan iborat bo'lmasligi kerak."
+
+msgid "username"
+msgstr "foydalanuvchi nomi"
+
+msgid "first name"
+msgstr "ism"
+
+msgid "last name"
+msgstr "familiya"
+
+msgid "email address"
+msgstr "email manzili"
+
+#, python-brace-format
+msgid "Ensure this field has at least {min_length} characters."
+msgstr "Kamida {min_length} ta belgi kiriting."
+
+msgid "This field may not be blank."
+msgstr "Bu maydonni to'ldiring."
+
+msgid "The new password must differ from the temporary one."
+msgstr "Yangi parol vaqtinchalik paroldan farq qilishi kerak."

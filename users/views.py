@@ -404,7 +404,8 @@ class TempPasswordChangeView(APIView):
         user, nonce = parsed
         new_password = request.data.get("new_password") or ""
         if user.check_password(new_password):
-            return Response({"detail": ["Yangi parol vaqtinchalik paroldan farq qilishi kerak."]},
+            from django.utils.translation import gettext as _
+            return Response({"detail": [_("The new password must differ from the temporary one.")]},
                             status=status.HTTP_400_BAD_REQUEST)
         try:
             validate_password(new_password, user=user)

@@ -644,7 +644,8 @@ class RegistryTempPasswordTests(QueueTestBase):
                                 format="json")
 
     def set_password(self, token, pw):
-        return self.client.post("/api/auth/login/set-password/", {"pw_token": token, "new_password": pw}, format="json")
+        return self.client.post("/api/auth/login/set-password/", {"pw_token": token, "new_password": pw},
+                                format="json", HTTP_ACCEPT_LANGUAGE="uz")
 
     def test_issue_shows_password_once_and_audits(self, _):
         r = self.issue()
@@ -692,6 +693,7 @@ class RegistryTempPasswordTests(QueueTestBase):
         token = r.data["pw_token"]
         weak = self.set_password(token, "123")
         self.assertEqual(weak.status_code, 400)
+        self.assertIn("Parol faqat raqamlardan iborat bo'lmasligi kerak.", weak.data["detail"])   # interfeys tilida
         same = self.set_password(token, pw)
         self.assertIn("farq qilishi", same.data["detail"][0])
         ok = self.set_password(token, self.NEW_PW)

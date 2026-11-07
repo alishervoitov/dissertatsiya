@@ -56,6 +56,8 @@ MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
+    # Xabarlar tili (parol talablari, DRF xatolari) frontend yuborgan Accept-Language bo'yicha
+    'django.middleware.locale.LocaleMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
@@ -122,6 +124,10 @@ AUTH_PASSWORD_VALIDATORS = [
 # https://docs.djangoproject.com/en/6.0/topics/i18n/
 
 LANGUAGE_CODE = 'en-us'
+# Frontend tillari; boshqa til so'ralsa LANGUAGE_CODE ishlatiladi
+LANGUAGES = [("uz", "O'zbekcha"), ("ru", "Русский"), ("en", "English")]
+# Django'da o'zbekcha tarjimasi yo'q xabarlar (parol tekshiruvi): locale/uz/LC_MESSAGES/django.po
+LOCALE_PATHS = [BASE_DIR / "locale"]
 
 TIME_ZONE = 'UTC'
 

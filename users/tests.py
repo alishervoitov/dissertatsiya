@@ -1038,3 +1038,35 @@ class RefreshCookieTests(APITestCase):
         self.assertEqual(r2.status_code, 200, r2.data)
         self.assertNotIn("refresh", r2.data)
         self.assertTrue(r2.cookies["sm_refresh"]["httponly"])
+
+
+@mock.patch.object(ScopedRateThrottle, "allow_request", return_value=True)
+class PasswordMessageLanguageTests(APITestCase):
+    """Parol talablari interfeys tilida (frontend Accept-Language yuboradi): uz, ru, en."""
+
+    def register(self, lang, password="12345"):
+        return self.client.post("/api/auth/register/", {
+            "username": "tilsinov", "password": password, "password_confirm": password, "first_name": "Til",
+            "last_name": "Sinov", "email": "til@example.com",
+        }, format="json", HTTP_ACCEPT_LANGUAGE=lang)
+
+    def test_messages_follow_interface_language(self, _):
+        expected = {
+            "uz": ["Parol faqat raqamlardan iborat bo'lmasligi kerak.", "Bu parol juda keng tarqalgan"],
+            "ru": ["Введённый пароль состоит только из цифр.", "Введённый пароль слишком широко распространён."],
+            "en": ["This password is entirely numeric.", "This password is too common."],
+        }
+        for lang, texts in expected.items():
+            with self.subTest(lang=lang):
+                body = str(self.register(lang, password="1234567890").data)
+                for text in texts:
+                    self.assertIn(text, body)
+
+    def test_uzbek_similarity_and_length(self, _):
+        body = str(self.register("uz", password="tilsinov12").data)
+        self.assertIn("Parol «foydalanuvchi nomi» maydoniga juda o'xshash.", body)
+        self.assertIn("Kamida 10 ta belgi kiriting.", str(self.register("uz", password="Ab1!").data))
+        self.assertIn("Введите не менее 10 символов.", str(self.register("ru", password="Ab1!").data))
+
+    def test_unknown_language_falls_back_to_english(self, _):
+        self.assertIn("entirely numeric", str(self.register("de", password="1234567890").data))

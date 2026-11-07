@@ -37,7 +37,9 @@ def is_configured():
 
 
 def _local(dt):
-    return dt.astimezone(ZoneInfo(settings.TIME_ZONE)).strftime("%Y-%m-%d %H:%M")
+    # Baza UTC'da; xabar administrator uchun - mahalliy vaqtda (QUEUE_TIME_ZONE, standart Asia/Tashkent)
+    tz = getattr(settings, "QUEUE_TIME_ZONE", "") or settings.TIME_ZONE
+    return dt.astimezone(ZoneInfo(tz)).strftime("%Y-%m-%d %H:%M")
 
 
 def build_message(result):

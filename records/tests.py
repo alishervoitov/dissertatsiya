@@ -461,6 +461,14 @@ class AuditAnchorTests(TestCase):
         self.assertIn(f"verify_audit_anchor {cp.last_id} {cp.last_hash} --count 5", body["text"])
         self.assertNotIn("Ko'rish", body["text"])          # yozuv mazmuni chiqmaydi
 
+    @override_settings(QUEUE_TIME_ZONE="Asia/Tashkent")
+    def test_message_time_is_local(self):
+        from datetime import datetime, timezone as dt_tz
+        from .audit_anchor import build_message
+        r = {"ok": True, "last_id": 1, "checked": 1, "head": "a" * 64,
+             "checked_at": datetime(2026, 11, 7, 8, 33, tzinfo=dt_tz.utc)}
+        self.assertIn("2026-11-07 13:33", build_message(r))
+
     def test_broken_chain_sends_alarm(self):
         from unittest import mock
         from .tasks import verify_audit_chain

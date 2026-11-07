@@ -36,6 +36,6 @@ reportlab==5.0.0
 six==1.17.0
 sqlparse==0.6.1
 tzdata==2026.3
-tzlocal==5.4.4
+tzlocal==5.4.5
 vine==5.1.0
 wcwidth==0.8.2

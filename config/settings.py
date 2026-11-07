@@ -186,7 +186,9 @@ AUTH_USER_MODEL = 'users.User'
 _DEV_CORS_ORIGINS = "http://localhost:3000,http://127.0.0.1:3000" if DEBUG else ""
 CORS_ALLOWED_ORIGINS = [o for o in os.environ.get("CORS_ALLOWED_ORIGINS", _DEV_CORS_ORIGINS).split(",") if o]
 CORS_URLS_REGEX = r"^/api/.*$"  # admin, media, static uchun CORS yo'q
-CORS_ALLOW_CREDENTIALS = False
+# Dev'da frontend (:3000) va API (:8000) turli manba: refresh cookie yuborilishi uchun credentials kerak.
+# Prod'da bir xil manba (/api) - CORS umuman ishlatilmaydi.
+CORS_ALLOW_CREDENTIALS = DEBUG
 # Kiosk ekrani o'z kalitini X-Kiosk-Key sarlavhasida yuboradi (dev rejimidagi CORS preflight uchun)
 from corsheaders.defaults import default_headers  # noqa: E402
 CORS_ALLOW_HEADERS = (*default_headers, "x-kiosk-key")
@@ -304,6 +306,11 @@ MFA_ISSUER = os.environ.get("MFA_ISSUER", "ShifoSafe")
 DJANGO_ADMIN_ENABLED = os.environ.get("DJANGO_ADMIN_ENABLED", "1") == "1"
 # Pentest/sinov dalillari arxivi (archive_test_accounts). protected_media - docker volume, /media/ orqali ochiq emas.
 EVIDENCE_DIR = Path(os.environ.get("EVIDENCE_DIR", str(BASE_DIR / "protected_media" / "evidence")))
+
+# Refresh token httpOnly cookie'da (users/auth_cookies.py): faqat /api/auth/ ga, SameSite=Strict, HTTPS'da Secure.
+AUTH_REFRESH_COOKIE = "sm_refresh"
+AUTH_REFRESH_COOKIE_PATH = "/api/auth/"
+AUTH_COOKIE_SECURE = os.environ.get("USE_HTTPS", "0") == "1"
 
 SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": _td(minutes=15),

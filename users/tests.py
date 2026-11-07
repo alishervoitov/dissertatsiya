@@ -575,6 +575,18 @@ class CaseInsensitiveUsernameTests(APITestCase):
 
 
 REFRESH_URL = "/api/auth/login/refresh/"
+XHR = {"HTTP_X_REQUESTED_WITH": "XMLHttpRequest"}
+
+
+def refresh_with(client, token, **extra):
+    """Refresh token endi faqat httpOnly cookie orqali yuboriladi."""
+    client.cookies["sm_refresh"] = str(token)
+    return client.post(REFRESH_URL, {}, format="json", **XHR, **extra)
+
+
+def logout_with(client, token, **extra):
+    client.cookies["sm_refresh"] = str(token)
+    return client.post("/api/auth/logout/", {}, format="json", **XHR, **extra)
 
 
 class PasswordResetConfirmHardeningTests(APITestCase):
@@ -622,11 +634,11 @@ class PasswordResetConfirmHardeningTests(APITestCase):
 
         sessions = [str(RefreshToken.for_user(self.user)) for _ in range(2)]
         for refresh in sessions:
-            self.assertEqual(self.client.post(REFRESH_URL, {"refresh": refresh}, format="json").status_code, 200)
+            self.assertEqual(refresh_with(self.client, refresh).status_code, 200)
         token = default_token_generator.make_token(self.user)
         self.assertEqual(self.confirm(token=token).status_code, status.HTTP_200_OK)
         for refresh in sessions:
-            self.assertEqual(self.client.post(REFRESH_URL, {"refresh": refresh}, format="json").status_code, 401)
+            self.assertEqual(refresh_with(self.client, refresh).status_code, 401)
         # Yangi parol bilan kirish ishlaydi
         login = self.client.post("/api/auth/login/", {"username": "victim", "password": "Nw8$kRt3!mZq5y"}, format="json")
         self.assertEqual(login.status_code, status.HTTP_200_OK)
@@ -839,7 +851,7 @@ class ActiveSessionTests(APITestCase):
         r = self.client.post("/api/auth/login/", {"username": user, "password": "Pw8$kRt3!mZq5y"},
                              format="json", HTTP_USER_AGENT=ua, REMOTE_ADDR=ip)
         self.assertEqual(r.status_code, 200)
-        return r.data
+        return {**r.data, "refresh": r.cookies["sm_refresh"].value}
 
     def as_(self, tokens):
         self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {tokens['access']}")
@@ -869,7 +881,7 @@ class ActiveSessionTests(APITestCase):
         self.as_(phone)
         self.assertEqual(self.client.get("/api/auth/me/").status_code, 401)
         self.client.credentials()
-        r = self.client.post("/api/auth/login/refresh/", {"refresh": phone["refresh"]}, format="json")
+        r = refresh_with(self.client, phone["refresh"])
         self.assertEqual(r.status_code, 401)
         # kompyuter ishlashda davom etadi
         self.as_(pc)
@@ -905,11 +917,11 @@ class ActiveSessionTests(APITestCase):
         t = self.login(self.PC)
         s = LoginSession.objects.get(user=self.user)
         self.client.credentials()
-        r = self.client.post("/api/auth/login/refresh/", {"refresh": t["refresh"]}, format="json", REMOTE_ADDR="10.9.9.9")
+        r = refresh_with(self.client, t["refresh"], REMOTE_ADDR="10.9.9.9")
         self.assertEqual(r.status_code, 200)
         s.refresh_from_db()
         self.assertEqual(s.ip, "10.9.9.9")
-        self.client.post("/api/auth/logout/", {"refresh": t["refresh"]}, format="json")
+        logout_with(self.client, t["refresh"])
         s.refresh_from_db()
         self.assertIsNotNone(s.revoked_at)
         self.as_({"access": r.data["access"]})               # yangilangan access ham yopiladi
@@ -918,7 +930,7 @@ class ActiveSessionTests(APITestCase):
     def test_old_token_without_session_is_adopted_on_refresh(self):
         from rest_framework_simplejwt.tokens import RefreshToken
         old = RefreshToken.for_user(self.user)              # joylashtirishdan oldingi token (sid yo'q)
-        self.client.post("/api/auth/login/refresh/", {"refresh": str(old)}, format="json", HTTP_USER_AGENT=self.PHONE)
+        refresh_with(self.client, old, HTTP_USER_AGENT=self.PHONE)
         self.assertTrue(LoginSession.objects.filter(jti=old["jti"]).exists())
 
     def test_password_reset_closes_sessions(self):
@@ -941,3 +953,88 @@ class DjangoAdminPathTests(APITestCase):
         self.assertEqual(reverse("admin:index"), "/django-admin/")
         self.assertEqual(self.client.get("/django-admin/").status_code, 302)   # login sahifasiga
         self.assertEqual(self.client.get("/admin/").status_code, 404)
+
+
+
+class RefreshCookieTests(APITestCase):
+    """S6/I7: refresh token faqat httpOnly cookie'da; JavaScript uni ko'rmaydi, boshqa sayt ishlata olmaydi."""
+
+    def setUp(self):
+        cache.clear()
+        self.user = User.objects.create_user(username="cookie", password=STRONG_PASSWORD, role=Role.PATIENT)
+
+    def login(self):
+        r = self.client.post("/api/auth/login/", {"username": "cookie", "password": STRONG_PASSWORD}, format="json")
+        self.assertEqual(r.status_code, 200)
+        return r
+
+    def test_login_sets_httponly_cookie_and_hides_refresh(self):
+        r = self.login()
+        self.assertIn("access", r.data)
+        self.assertNotIn("refresh", r.data)                       # tanada yo'q
+        c = r.cookies["sm_refresh"]
+        self.assertTrue(c["httponly"])
+        self.assertEqual(c["samesite"], "Strict")
+        self.assertEqual(c["path"], "/api/auth/")
+        self.assertEqual(int(c["max-age"]), 86400)
+        self.assertFalse(c["secure"])                             # testda USE_HTTPS yo'q
+
+    @override_settings(AUTH_COOKIE_SECURE=True)
+    def test_secure_flag_on_https(self):
+        self.assertTrue(self.login().cookies["sm_refresh"]["secure"])
+
+    def test_refresh_uses_cookie_and_returns_access_only(self):
+        self.login()
+        r = self.client.post(REFRESH_URL, {}, format="json", **XHR)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(set(r.data), {"access"})
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {r.data['access']}")
+        self.assertEqual(self.client.get("/api/auth/me/").status_code, 200)
+
+    def test_refresh_in_body_is_ignored(self):
+        from rest_framework_simplejwt.tokens import RefreshToken
+        token = str(RefreshToken.for_user(self.user))
+        r = self.client.post(REFRESH_URL, {"refresh": token}, format="json", **XHR)   # cookie yo'q
+        self.assertEqual((r.status_code, r.data["code"]), (401, "no_session"))
+
+    def test_refresh_without_xhr_header_rejected(self):
+        self.login()
+        r = self.client.post(REFRESH_URL, {}, format="json")       # oddiy forma / boshqa sayt
+        self.assertEqual((r.status_code, r.data["code"]), (403, "csrf"))
+        self.assertEqual(self.client.post("/api/auth/logout/", {}, format="json").status_code, 403)
+
+    def test_logout_revokes_and_clears_cookie(self):
+        self.login()
+        r = self.client.post("/api/auth/logout/", {}, format="json", **XHR)
+        self.assertEqual(r.status_code, 205)
+        self.assertEqual(r.cookies["sm_refresh"].value, "")
+        self.assertEqual(int(r.cookies["sm_refresh"]["max-age"]), 0)
+        self.assertEqual(LoginSession.objects.get(user=self.user).revoked_at is not None, True)
+
+    def test_logout_without_cookie_is_harmless(self):
+        self.assertEqual(self.client.post("/api/auth/logout/", {}, format="json", **XHR).status_code, 205)
+
+    def test_revoked_cookie_is_cleared_on_refresh(self):
+        r = self.login()
+        token = r.cookies["sm_refresh"].value
+        logout_with(self.client, token)
+        r = refresh_with(self.client, token)
+        self.assertEqual(r.status_code, 401)
+        self.assertEqual(r.cookies["sm_refresh"].value, "")
+
+    def test_mfa_login_sets_cookie(self):
+        from . import mfa
+        from .models import TwoFactorDevice
+        from django.utils import timezone
+        secret = mfa.new_secret()
+        TwoFactorDevice.objects.create(user=self.user, secret=secret, confirmed_at=timezone.now())
+        self.user.is_active_2fa = True
+        self.user.save()
+        r = self.login()
+        self.assertTrue(r.data["mfa_required"])
+        self.assertNotIn("sm_refresh", r.cookies)                 # parolning o'zi cookie bermaydi
+        code = mfa.totp_at(secret, mfa.current_step())             # haqiqiy vaqt: mfa_token imzosi ham shunga bog'liq
+        r2 = self.client.post("/api/auth/login/2fa/", {"mfa_token": r.data["mfa_token"], "code": code}, format="json")
+        self.assertEqual(r2.status_code, 200, r2.data)
+        self.assertNotIn("refresh", r2.data)
+        self.assertTrue(r2.cookies["sm_refresh"]["httponly"])

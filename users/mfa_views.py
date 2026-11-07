@@ -12,6 +12,7 @@ from appointments.checkin import qr_svg
 from records.audit import log_audit
 
 from . import mfa, sessions
+from .auth_cookies import set_refresh_cookie
 from .models import TwoFactorDevice, User
 from .permissions import IsAdmin
 from .security import client_ident, revoke_refresh_tokens
@@ -68,12 +69,14 @@ class MfaLoginView(APIView):
                             status=status.HTTP_400_BAD_REQUEST)
         mfa.consume_login_token(nonce)
         data = issue_tokens(request, user)
+        refresh = data.pop("refresh")
         if method == "backup":
             data["backup_remaining"] = mfa.backup_remaining(user)
             security_logger.warning("Zaxira kod bilan kirildi: %r (IP: %s, qoldi %s)",
                                     user.username, client_ident(request), data["backup_remaining"])
         security_logger.info("Muvaffaqiyatli kirish (2FA, %s): %r (IP: %s)", method, user.username, client_ident(request))
-        return Response(data)
+        # Refresh token - faqat httpOnly cookie'da (users/auth_cookies.py)
+        return set_refresh_cookie(Response(data), refresh)
 
 
 class MfaStatusView(APIView):

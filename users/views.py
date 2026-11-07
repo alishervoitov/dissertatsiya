@@ -4,11 +4,12 @@ from rest_framework.exceptions import AuthenticationFailed, Throttled, Validatio
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
-from rest_framework_simplejwt.exceptions import TokenError
+from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from .avatar import AvatarError, delete_old_avatar, process_avatar
 from . import sessions
+from .auth_cookies import clear_refresh_cookie, csrf_header_ok, move_refresh_to_cookie, read_refresh, set_refresh_cookie
 from .models import LoginSession, User
 from .permissions import IsAdmin
 from .security import client_ident, record_register_taken, register_taken_exceeded, revoke_refresh_tokens
@@ -96,11 +97,12 @@ class LoginView(TokenObtainPairView):
             request.data.get("username"),
             client_ident(request),
         )
-        return response
+        # Refresh token javob tanasida emas, httpOnly cookie'da (users/auth_cookies.py)
+        return move_refresh_to_cookie(response)
 
 
 class LogoutView(APIView):
-    """Refresh tokenni qora ro'yxatga qo'shib, sessiyani butunlay yopadi."""
+    """Cookie'dagi refresh tokenni qora ro'yxatga qo'shib, sessiyani yopadi va cookie'ni o'chiradi."""
 
     # Refresh tokenning o'zi credential: access eskirgan bo'lsa ham logout ishlashi kerak,
     # aks holda 401 qaytadi va blacklist chaqirilmaydi. Sarlavhadagi access token e'tiborga olinmaydi.
@@ -110,18 +112,20 @@ class LogoutView(APIView):
     throttle_scope = "logout"
 
     def post(self, request):
-        try:
-            token = RefreshToken(request.data["refresh"])
-            token.blacklist()
-            sessions.mark_revoked_jtis([token["jti"]])
-        except (KeyError, TypeError, TokenError):
-            return Response({"detail": "Yaroqsiz token."}, status=status.HTTP_400_BAD_REQUEST)
-        security_logger.info(
-            "Chiqish: user_id=%s (IP: %s)",
-            token.get("user_id"),
-            client_ident(request),
-        )
-        return Response(status=status.HTTP_205_RESET_CONTENT)
+        if not csrf_header_ok(request):
+            return Response({"detail": "So'rov rad etildi.", "code": "csrf"}, status=status.HTTP_403_FORBIDDEN)
+        raw = read_refresh(request)
+        user_id = None
+        if raw:
+            try:
+                token = RefreshToken(raw)
+                token.blacklist()
+                sessions.mark_revoked_jtis([token["jti"]])
+                user_id = token.get("user_id")
+            except TokenError:
+                pass                         # muddati o'tgan yoki allaqachon yopilgan - baribir chiqamiz
+        security_logger.info("Chiqish: user_id=%s (IP: %s)", user_id, client_ident(request))
+        return clear_refresh_cookie(Response(status=status.HTTP_205_RESET_CONTENT))
 
 
 class MeView(APIView):
@@ -284,14 +288,31 @@ class PasswordResetConfirmView(APIView):
         return Response({"detail": "Parol muvaffaqiyatli yangilandi."})
 
 class SessionRefreshView(TokenRefreshView):
-    """Access tokenni yangilaydi va sessiyaning oxirgi faollik vaqtini belgilaydi."""
+    """httpOnly cookie'dagi refresh token bilan yangi access token beradi va sessiya faolligini belgilaydi.
+    Refresh token tanada qabul qilinmaydi va qaytarilmaydi - JavaScript uni hech qachon ko'rmaydi."""
 
     def post(self, request, *args, **kwargs):
-        response = super().post(request, *args, **kwargs)
+        if not csrf_header_ok(request):
+            return Response({"detail": "So'rov rad etildi.", "code": "csrf"}, status=status.HTTP_403_FORBIDDEN)
+        raw = read_refresh(request)
+        if not raw:
+            return Response({"detail": "Sessiya topilmadi. Qaytadan kiring.", "code": "no_session"},
+                            status=status.HTTP_401_UNAUTHORIZED)
+        serializer = self.get_serializer(data={"refresh": raw})
         try:
-            sessions.touch_session(request, RefreshToken(request.data["refresh"]))
+            serializer.is_valid(raise_exception=True)
+        except (TokenError, InvalidToken):
+            # Yopilgan, muddati o'tgan yoki soxta cookie - uni ham o'chiramiz
+            return clear_refresh_cookie(Response({"detail": "Sessiya tugagan. Qaytadan kiring.",
+                                                  "code": "token_not_valid"}, status=status.HTTP_401_UNAUTHORIZED))
+        try:
+            sessions.touch_session(request, RefreshToken(raw))
         except Exception:
             security_logger.exception("Sessiya faolligini yangilab bo'lmadi")
+        data = dict(serializer.validated_data)
+        response = Response({"access": data["access"]})
+        if data.get("refresh"):                  # ROTATE_REFRESH_TOKENS yoqilsa - yangisi cookie'ga
+            set_refresh_cookie(response, data["refresh"])
         return response
 
 

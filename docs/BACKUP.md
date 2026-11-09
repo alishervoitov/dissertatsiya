@@ -1,6 +1,7 @@
 # Zaxira nusxa (backup)
 
-Har kuni soat 03:15 da server `scripts/backup.sh` ni bajaradi:
+Har 6 soatda (00:15, 06:15, 12:15, 18:15 server vaqti) server `scripts/backup.sh` ni bajaradi, ya'ni
+ko'pi bilan 6 soatlik ma'lumot yo'qolishi mumkin (RPO):
 
 - **Nima saqlanadi:** PostgreSQL bazasi, yuklangan fayllar (`media`, `protected_media`) va `.env.docker`. `.env.docker` kerak, chunki undagi kalitlarsiz bazadagi shifrlangan ma'lumot ochilmaydi.
 - **Qanday shifrlanadi:** hammasi bitta arxivga yig'iladi va `age` bilan **ochiq kalitga** shifrlanadi. Yopiq kalit serverda yo'q, shuning uchun server buzilsa ham zaxiralarni o'qib bo'lmaydi.
@@ -22,7 +23,7 @@ age-keygen -y ~/shifosafe-backup-key.txt > ~/backups/medkarta/recipient.txt
 Sinov va cron:
 ```
 bash /opt/medkarta/dissertatsiya/scripts/backup.sh
-(crontab -l 2>/dev/null; echo "15 3 * * * bash /opt/medkarta/dissertatsiya/scripts/backup.sh >/dev/null 2>&1") | crontab -
+(crontab -l 2>/dev/null | grep -v scripts/backup.sh; echo "15 */6 * * * bash /opt/medkarta/dissertatsiya/scripts/backup.sh >/dev/null 2>&1") | crontab -
 ```
 Jurnal: `~/backups/medkarta/backup.log`.
 
@@ -33,7 +34,7 @@ uni o'qiy olmaydi. Yuborish xatosi serverdagi nusxani bekor qilmaydi, lekin `bac
 Telegram'ga «⚠️ … yuborib bo'lmadi» xabari keladi.
 
 **Telegram (qo'shimcha sozlamasiz).** `.env.docker` da `TELEGRAM_BOT_TOKEN` va `TELEGRAM_AUDIT_CHAT_ID` bo'lsa,
-har kungi zaxira shu chatga fayl bo'lib (ovozsiz) keladi; izohda hajmi va SHA-256. Alohida chat kerak bo'lsa —
+har bir zaxira shu chatga fayl bo'lib (ovozsiz) keladi; izohda hajmi va SHA-256. Alohida chat kerak bo'lsa —
 `TELEGRAM_BACKUP_CHAT_ID`. 45 MB dan katta arxiv bo'laklarga bo'linadi; tiklashda:
 ```
 cat shifosafe-....tar.age.part* > shifosafe-....tar.age

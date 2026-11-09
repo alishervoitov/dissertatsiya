@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ShifoSafe: kunlik shifrlangan zaxira nusxa.
+# ShifoSafe: shifrlangan zaxira nusxa (har 6 soatda).
 #
 # Nima saqlanadi: PostgreSQL bazasi (pg_dump), yuklangan fayllar (media, protected_media)
 # va .env.docker (FIELD_ENCRYPTION_KEY, AUDIT_HMAC_KEY - ularsiz bazadagi shifrlangan
@@ -9,8 +9,8 @@
 # Nusxalar uch joyda: serverda (30 kun), administrator kompyuterida (pull_backups.ps1) va uchinchi joyda -
 # Telegram yoki bulut (scripts/offsite.sh).
 #
-# Sozlash: docs/BACKUP.md. Cron (har kuni 03:15):
-#   15 3 * * * bash /opt/medkarta/dissertatsiya/scripts/backup.sh >/dev/null 2>&1
+# Sozlash: docs/BACKUP.md. Cron (har 6 soatda, RPO <= 6 soat):
+#   15 */6 * * * bash /opt/medkarta/dissertatsiya/scripts/backup.sh >/dev/null 2>&1
 set -Eeuo pipefail
 
 APP_DIR=${APP_DIR:-/opt/medkarta/dissertatsiya}

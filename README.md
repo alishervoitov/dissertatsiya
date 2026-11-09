@@ -174,7 +174,9 @@ Loyiha ikki qatlamli himoya modeliga asoslangan:
 Audit jurnali HMAC xesh zanjiri bilan himoyalangan, lekin kalit serverda turadi: serverni to'liq egallagan
 buzg'unchi yozuvni o'zgartirib, zanjirni kalit bilan qayta hisoblashi mumkin. Buni sezish uchun har kuni
 02:10 (Toshkent) da tekshiruvdan keyin zanjir oxiri — oxirgi yozuv raqami, uning xeshi va yozuvlar soni —
-administratorning Telegram chatiga yuboriladi. Xabarda bemor ma'lumoti yo'q. Zanjir buzilgan bo'lsa,
+administratorning Telegram chatiga yuboriladi. Xabarda bemor ma'lumoti yo'q. Xabar oxirida oxirgi 24 soat
+statistikasi (`monitoring/stats.py`): kirishlar, noto'g'ri parol va bloklanishlar, 2FA xatolari, ogohlantirishlar,
+favqulodda kirishlar va audit yozuvlari soni — faqat sonlar, login yoki IP ko'rsatilmaydi. Zanjir buzilgan bo'lsa,
 langar o'rniga ogohlantirish keladi.
 
 Sozlash (`.env.docker`): `TELEGRAM_BOT_TOKEN` (@BotFather bergan token) va `TELEGRAM_AUDIT_CHAT_ID`.

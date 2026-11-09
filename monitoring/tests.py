@@ -2,7 +2,7 @@
 Shubhali faollik qoidalari testlari.
 Ishlatish: python manage.py test monitoring --settings=config.settings_test
 """
-from datetime import datetime
+from datetime import datetime, timedelta
 from unittest import mock
 from zoneinfo import ZoneInfo
 
@@ -352,3 +352,82 @@ class AutoResponseTests(APITestCase):
                 self.captureOnCommitCallbacks(execute=True):
             self.mass_view(self.doctor)
         self.assertIn("hisob siz ko'rib chiqmaguncha to'xtatildi", sent[0])
+
+
+@mock.patch("rest_framework.throttling.ScopedRateThrottle.allow_request", return_value=True)
+class DailyStatsTests(APITestCase):
+    """Kunlik Telegram langari: oxirgi 24 soat statistikasi (faqat sonlar, shaxsiy ma'lumotsiz)."""
+
+    PW = "Qx7#vTm2!pLz9w"
+
+    def setUp(self):
+        from django.core.cache import cache
+        cache.clear()
+        self.doctor = User.objects.create_user(username="st_doc", password=self.PW, role=Role.DOCTOR)
+        self.pu = User.objects.create_user(username="st_pat", password=self.PW, role=Role.PATIENT)
+        self.patient = Patient.objects.get(user=self.pu)
+
+    def session_for(self, user):
+        from rest_framework.test import APIRequestFactory
+        from users import sessions
+        from users.serializers import CustomTokenObtainPairSerializer
+        sessions.start_session(APIRequestFactory().get("/"), user, CustomTokenObtainPairSerializer.get_token(user))
+
+    def test_collects_last_24h(self, _):
+        from django.utils import timezone
+        from monitoring.stats import collect
+        from users.security import MAX_FAILED_ATTEMPTS
+        self.session_for(self.doctor)
+        self.session_for(self.pu)
+        self.session_for(self.pu)
+        for _i in range(MAX_FAILED_ATTEMPTS):
+            self.client.post("/api/auth/login/", {"username": "st_pat", "password": "wrong"}, format="json")
+        log_audit(self.doctor, "view", patient=self.patient)
+        log_audit(self.doctor, "export", patient=self.patient)
+        now = timezone.now()
+        SecurityAlert.objects.create(rule="mass_access", severity="high", actor=self.doctor, detail="x",
+                                     first_seen=now, last_seen=now, auto_response="locked")
+        old = now - timedelta(days=2)
+        SecurityAlert.objects.create(rule="off_hours", severity="medium", actor=self.doctor, detail="eski",
+                                     first_seen=old, last_seen=old, status="acknowledged")
+        s = collect()
+        self.assertEqual((s["logins"], s["logins_staff"], s["logins_patient"], s["login_users"]), (3, 1, 2, 2))
+        self.assertEqual((s["login_failed"], s["lockout"]), (MAX_FAILED_ATTEMPTS, 1))
+        self.assertEqual((s["alerts"], s["alerts_high"], s["suspended"]), (1, 1, 1))     # eskisi kirmaydi
+        self.assertEqual((s["audit_view"], s["audit_export"]), (1, 1))
+
+    def test_old_counter_buckets_are_ignored(self, _):
+        from django.utils import timezone
+        from monitoring.stats import bump, counters
+        with mock.patch("monitoring.stats.timezone.now", return_value=timezone.now() - timedelta(hours=25)):
+            bump("lockout")
+        bump("lockout")
+        self.assertEqual(counters()["lockout"], 1)
+
+    def test_anchor_message_has_stats_without_personal_data(self, _):
+        from records.audit_integrity import run_check
+        from records.audit_anchor import build_message
+        self.session_for(self.doctor)
+        log_audit(self.doctor, "view", patient=self.patient, detail="Karta: Maxfiy Bemor")
+        text = build_message(run_check())
+        self.assertIn("📊 <b>Oxirgi 24 soat</b>", text)
+        self.assertIn("Kirishlar: 1 (1 xodim, 0 bemor; 1 foydalanuvchi)", text)
+        self.assertIn("Audit yozuvlari: 1 (ko'rish 1", text)
+        for secret in ("st_doc", "st_pat", "Maxfiy"):
+            self.assertNotIn(secret, text)
+
+    def test_redis_down_still_builds_message(self, _):
+        from records.audit_integrity import run_check
+        from records.audit_anchor import build_message
+        with mock.patch("monitoring.stats.cache.get_many", side_effect=ConnectionError("redis")):
+            text = build_message(run_check())
+        self.assertIn("Noto'g'ri parol: 0", text)
+
+    def test_stats_failure_never_blocks_anchor(self, _):
+        from records.audit_integrity import run_check
+        from records.audit_anchor import build_message
+        log_audit(self.doctor, "view", patient=self.patient)
+        with mock.patch("monitoring.stats.collect", side_effect=RuntimeError("boom")):
+            text = build_message(run_check())
+        self.assertIn("zanjir butun", text)
+        self.assertNotIn("Oxirgi 24 soat", text)

@@ -62,7 +62,10 @@ class MfaLoginView(APIView):
             security_logger.warning("2FA kodi noto'g'ri: %r (IP: %s, urinish %s)",
                                     getattr(user, "username", user_id), client_ident(request), tries)
             left = max(0, mfa.MFA_MAX_ATTEMPTS - tries)
+            from monitoring.stats import bump
+            bump("mfa_failed")
             if not left:
+                bump("mfa_exhausted")
                 if user:
                     from monitoring.notify import mfa_exhausted
                     mfa_exhausted(user, client_ident(request))
@@ -81,6 +84,8 @@ class MfaLoginView(APIView):
             security_logger.warning("Zaxira kod bilan kirildi: %r (IP: %s, qoldi %s)",
                                     user.username, client_ident(request), data["backup_remaining"])
             from monitoring.notify import backup_code_login
+            from monitoring.stats import bump
+            bump("backup_code")
             backup_code_login(user, client_ident(request), data["backup_remaining"])
         security_logger.info("Muvaffaqiyatli kirish (2FA, %s): %r (IP: %s)", method, user.username, client_ident(request))
         # Refresh token - faqat httpOnly cookie'da (users/auth_cookies.py)

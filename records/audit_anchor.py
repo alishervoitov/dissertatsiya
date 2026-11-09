@@ -37,26 +37,37 @@ def _local(dt):
     return dt.astimezone(ZoneInfo(tz)).strftime("%Y-%m-%d %H:%M")
 
 
-def build_message(result):
+def _stats_block():
+    """Oxirgi 24 soat statistikasi; xato bo'lsa langarning o'zi baribir yuboriladi."""
+    try:
+        from monitoring.stats import collect, render
+        return render(collect())
+    except Exception:  # noqa: BLE001
+        security_logger.exception("AUDIT-ANCHOR: statistikani yig'ib bo'lmadi")
+        return ""
+
+
+def build_message(result, with_stats=True):
     """run_check() natijasidan Telegram xabari (HTML)."""
+    stats = _stats_block() if with_stats else ""
     when = _local(result["checked_at"])
     if result["ok"]:
         if not result["last_id"]:
-            return f"🛡 <b>ShifoSafe audit langari</b>\n{when}\nJurnal hali bo'sh."
+            return f"🛡 <b>ShifoSafe audit langari</b>\n{when}\nJurnal hali bo'sh.{stats}"
         return (
             f"🛡 <b>ShifoSafe audit langari</b>\n"
             f"{when} · ✅ zanjir butun\n"
             f"Yozuvlar: {result['checked']} · oxirgi #{result['last_id']}\n"
             f"Xesh: <code>{result['head']}</code>\n\n"
             f"Tekshirish:\n<code>python manage.py verify_audit_anchor {result['last_id']} "
-            f"{result['head']} --count {result['checked']}</code>"
+            f"{result['head']} --count {result['checked']}</code>{stats}"
         )
     ids = ", ".join(f"{p['type']} #{p['id']}" for p in result["problems"][:5])
     return (
         f"🚨 <b>ShifoSafe: AUDIT ZANJIRI BUZILGAN</b>\n"
         f"{when}\n"
         f"Muammolar: {len(result['problems'])} ta ({ids})\n"
-        f"Langar yuborilmadi. Serverni tekshiring."
+        f"Langar yuborilmadi. Serverni tekshiring.{stats}"
     )
 
 

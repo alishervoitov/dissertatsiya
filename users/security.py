@@ -85,10 +85,14 @@ def is_login_locked(username, ident):
 
 def register_login_failure(username, ident):
     """Muvaffaqiyatsiz urinishni hisoblaydi; chegaraga yetganda username+IP bloklanadi."""
+    from monitoring.stats import bump  # kunlik Telegram langari statistikasi
+
     fail_key, lock_key = _login_keys(username, ident)
+    bump("login_failed")
     if _increment(fail_key, LOCKOUT_DURATION) >= MAX_FAILED_ATTEMPTS:
         cache.set(lock_key, 1, int(LOCKOUT_DURATION.total_seconds()))
         cache.delete(fail_key)
+        bump("lockout")
         return True
     return False
 

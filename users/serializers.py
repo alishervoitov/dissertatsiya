@@ -178,6 +178,8 @@ class AdminCreateUserSerializer(serializers.ModelSerializer):
         specialty = validated_data.pop("specialty", "")
         room = validated_data.pop("room", "")
         user = User(**validated_data)
+        # Administrator kiritgan email tasdiqlangan hisoblanadi
+        user.email_verified = bool(user.email)
         user.set_password(password)
         user.save()
         if user.role == Role.DOCTOR:
@@ -256,8 +258,8 @@ class UserPublicSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = ["id", "username", "first_name", "last_name", "email", "phone", "role", "avatar_url", "created_at",
-                  "mfa_enabled", "mfa_required"]
-        read_only_fields = ["id", "role", "created_at"]
+                  "mfa_enabled", "mfa_required", "email_verified"]
+        read_only_fields = ["id", "role", "created_at", "email_verified"]
         # Admin PATCH orqali boshqa hisobning registr varianti nomiga o'tkazib bo'lmasin
         extra_kwargs = {"username": {"validators": CASE_INSENSITIVE_USERNAME_VALIDATORS}}
 

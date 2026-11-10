@@ -21,7 +21,9 @@ def request_password_reset(email):
     """
     from .models import User
 
-    user = User.objects.filter(email__iexact=email).first()
+    # Faqat tasdiqlangan email: aks holda birovning emailini yozgan foydalanuvchi orqali
+    # tiklash xati begona odamga ketadi (users/email_verify.py)
+    user = User.objects.filter(email__iexact=email, email_verified=True, is_active=True).first()
     if not user:
         # Email foydalanuvchi kiritgan qiymat: niqoblanadi (shaxsiy ma'lumot, log injection)
         security_logger.info("Parolni tiklash so'ralgan, lekin email topilmadi: %s", mask_email(email))
@@ -41,11 +43,26 @@ def send_password_reset_email(user_email, full_name, reset_link):
     email serveri sekin javob bersa ham, API so'rovi darhol javob qaytaradi.
     """
     send_mail(
-        subject="MedKarta — Parolni tiklash",
+        subject="ShifoSafe — Parolni tiklash",
         message=(
             f"Salom, {full_name}!\n\n"
             f"Parolingizni tiklash uchun quyidagi havolaga o'ting:\n{reset_link}\n\n"
             f"Agar buni siz so'ramagan bo'lsangiz, bu xabarni e'tiborsiz qoldiring."
+        ),
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        recipient_list=[user_email],
+    )
+
+@shared_task
+def send_verification_email(user_email, full_name, code):
+    """Emailni tasdiqlash kodi. Xatda tibbiy ma'lumot yo'q, faqat kod."""
+    send_mail(
+        subject="ShifoSafe — emailni tasdiqlash kodi",
+        message=(
+            f"Salom, {full_name}!\n\n"
+            f"Emailingizni tasdiqlash kodi: {code}\n"
+            f"Kod 15 daqiqa amal qiladi.\n\n"
+            f"Agar ShifoSafe tizimida ro'yxatdan o'tmagan bo'lsangiz, bu xatni e'tiborsiz qoldiring."
         ),
         from_email=settings.DEFAULT_FROM_EMAIL,
         recipient_list=[user_email],

@@ -396,7 +396,8 @@ class RegisterEnumerationTests(APITestCase):
 class PasswordResetEnumerationTests(APITestCase):
     def setUp(self):
         cache.clear()
-        self.user = User.objects.create_user(username="resetuser", email="reset@example.com", password=STRONG_PASSWORD)
+        self.user = User.objects.create_user(username="resetuser", email="reset@example.com", password=STRONG_PASSWORD,
+                                             email_verified=True)
 
     def test_request_always_queues_task_with_same_response(self):
         with mock.patch("users.views.request_password_reset.delay") as delay:
@@ -1218,3 +1219,153 @@ class EmailRequirementTests(APITestCase):
         self.assertEqual(r.status_code, status.HTTP_403_FORBIDDEN)
         doc.refresh_from_db()
         self.assertEqual(doc.email, "doc_x@example.com")
+
+
+@mock.patch.object(ScopedRateThrottle, "allow_request", return_value=True)
+class EmailVerificationTests(APITestCase):
+    """Onlayn ro'yxatdan o'tgan bemor emailini 6 xonali kod bilan tasdiqlaydi; parolni tiklash faqat
+    tasdiqlangan emailga ishlaydi (2026-11-10)."""
+
+    SEND_URL = "/api/auth/email/send-code/"
+    VERIFY_URL = "/api/auth/email/verify/"
+
+    def setUp(self):
+        cache.clear()
+        mail.outbox = []
+        # Test tranzaksiyasi commit qilinmaydi: on_commit ichidagi xat yuborishni darhol bajaramiz
+        patcher = mock.patch("users.email_verify.transaction.on_commit", side_effect=lambda fn: fn())
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def register(self, username="vpatient", email="vpatient@example.com"):
+        r = self.client.post(REGISTER_URL, {
+            "username": username, "first_name": "Vali", "last_name": "Bemor", "email": email, "phone": "",
+            "password": STRONG_PASSWORD, "password_confirm": STRONG_PASSWORD,
+        }, format="json", HTTP_X_FORWARDED_FOR="10.11.0.1")
+        self.assertEqual(r.status_code, status.HTTP_201_CREATED, r.content)
+        user = User.objects.get(username=username)
+        self.client.force_authenticate(user)
+        return user
+
+    def last_code(self):
+        return re.search(r"kodi: (\d{6})", mail.outbox[-1].body).group(1)
+
+    def test_register_sends_code_and_user_starts_unverified(self, _):
+        user = self.register()
+        self.assertFalse(user.email_verified)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, ["vpatient@example.com"])
+        self.assertIn("tasdiqlash", mail.outbox[0].subject)
+        self.assertRegex(mail.outbox[0].body, r"kodi: \d{6}")
+        self.assertFalse(self.client.get("/api/auth/me/").json()["email_verified"])
+
+    def test_correct_code_verifies_once(self, _):
+        from records.models import AuditLog
+
+        user = self.register()
+        code = self.last_code()
+        wrong = "000000" if code != "000000" else "111111"
+        r = self.client.post(self.VERIFY_URL, {"code": wrong}, format="json")
+        self.assertEqual((r.status_code, r.json()["code"]), (400, "invalid"))
+        r = self.client.post(self.VERIFY_URL, {"code": code}, format="json")
+        self.assertEqual(r.status_code, 200, r.content)
+        user.refresh_from_db()
+        self.assertTrue(user.email_verified)
+        self.assertTrue(AuditLog.objects.filter(actor=user, detail="Email tasdiqlandi").exists())
+        self.assertTrue(self.client.get("/api/auth/me/").json()["email_verified"])
+        # Qayta yuborish kerak emas
+        self.assertEqual(self.client.post(self.SEND_URL).json()["code"], "already_verified")
+
+    def test_five_wrong_attempts_burn_the_code(self, _):
+        self.register()
+        code = self.last_code()
+        wrong = "000000" if code != "000000" else "111111"
+        results = [self.client.post(self.VERIFY_URL, {"code": wrong}, format="json").json()["code"] for _ in range(5)]
+        self.assertEqual(results, ["invalid"] * 4 + ["too_many"])
+        r = self.client.post(self.VERIFY_URL, {"code": code}, format="json")
+        self.assertEqual(r.json()["code"], "no_code")
+
+    def test_expired_code_rejected(self, _):
+        self.register()
+        code = self.last_code()
+        import time as _time
+        with mock.patch("users.email_verify.time.time", return_value=_time.time() + 16 * 60):
+            r = self.client.post(self.VERIFY_URL, {"code": code}, format="json")
+        self.assertEqual(r.json()["code"], "no_code")
+
+    def test_resend_cooldown_and_daily_limit(self, _):
+        self.register()
+        r = self.client.post(self.SEND_URL)
+        self.assertEqual((r.status_code, r.json()["code"]), (429, "cooldown"))
+        user = User.objects.get(username="vpatient")
+        for i in range(4):
+            cache.delete(f"emailv:cd:{user.pk}")
+            self.assertEqual(self.client.post(self.SEND_URL).status_code, 200, i)
+        cache.delete(f"emailv:cd:{user.pk}")
+        r = self.client.post(self.SEND_URL)
+        self.assertEqual((r.status_code, r.json()["code"]), (429, "daily_limit"))
+        self.assertEqual(len(mail.outbox), 5)
+
+    def test_new_code_replaces_old(self, _):
+        user = self.register()
+        old = self.last_code()
+        cache.delete(f"emailv:cd:{user.pk}")
+        self.client.post(self.SEND_URL)
+        new = self.last_code()
+        if old != new:
+            self.assertEqual(self.client.post(self.VERIFY_URL, {"code": old}, format="json").json()["code"], "invalid")
+        self.assertEqual(self.client.post(self.VERIFY_URL, {"code": new}, format="json").status_code, 200)
+
+    def test_code_bound_to_email(self, _):
+        user = self.register()
+        code = self.last_code()
+        User.objects.filter(pk=user.pk).update(email="other@example.com")
+        user.refresh_from_db()
+        self.client.force_authenticate(user)
+        self.assertEqual(self.client.post(self.VERIFY_URL, {"code": code}, format="json").json()["code"], "invalid")
+
+    def test_code_never_logged(self, _):
+        with self.assertLogs("security", level="INFO") as logs:
+            self.register()
+        code = self.last_code()
+        self.assertFalse(any(code in line for line in logs.output))
+
+    def test_password_reset_only_for_verified_email(self, _):
+        user = self.register()
+        code = self.last_code()
+        mail.outbox = []
+        request_password_reset("vpatient@example.com")
+        self.assertEqual(len(mail.outbox), 0)
+        self.client.post(self.VERIFY_URL, {"code": code}, format="json")
+        request_password_reset("vpatient@example.com")
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn("/reset-password/", mail.outbox[0].body)
+
+    def test_unauthenticated_cannot_use_endpoints(self, _):
+        self.assertEqual(self.client.post(self.SEND_URL).status_code, 401)
+        self.assertEqual(self.client.post(self.VERIFY_URL, {"code": "123456"}, format="json").status_code, 401)
+
+    def test_admin_set_email_counts_as_verified_and_cancels_pending_code(self, _):
+        user = self.register()
+        code = self.last_code()
+        admin = User.objects.create_user(username="v_admin", password=STRONG_PASSWORD, role=Role.ADMIN,
+                                         email="v_admin@example.com")
+        self.client.force_authenticate(admin)
+        r = self.client.patch(f"{ADMIN_USERS_URL}{user.id}/", {"email": "desk@example.com"}, format="json")
+        self.assertEqual(r.status_code, 200, r.content)
+        user.refresh_from_db()
+        self.assertTrue(user.email_verified)
+        self.assertIsNone(cache.get(f"emailv:{user.pk}"))
+        self.assertTrue(r.json()["email_verified"])
+        self.assertTrue(code)
+
+    def test_admin_created_staff_is_verified(self, _):
+        admin = User.objects.create_user(username="v_admin2", password=STRONG_PASSWORD, role=Role.ADMIN,
+                                         email="v_admin2@example.com")
+        self.client.force_authenticate(admin)
+        r = self.client.post(ADMIN_USERS_URL, {
+            "username": "v_doc", "first_name": "A", "last_name": "B", "email": "v_doc@example.com", "phone": "",
+            "password": STRONG_PASSWORD, "role": Role.DOCTOR}, format="json")
+        self.assertEqual(r.status_code, 201, r.content)
+        self.assertTrue(User.objects.get(username="v_doc").email_verified)
+        self.assertEqual(len(mail.outbox), 0)  # xodimga kod yuborilmaydi

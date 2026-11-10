@@ -8,7 +8,7 @@ from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from .avatar import AvatarError, delete_old_avatar, process_avatar
-from . import sessions
+from . import email_verify, sessions
 from .auth_cookies import clear_refresh_cookie, csrf_header_ok, move_refresh_to_cookie, read_refresh, set_refresh_cookie
 from .models import LoginSession, Role, User
 from .permissions import IsAdmin
@@ -59,6 +59,8 @@ class RegisterView(generics.CreateAPIView):
             raise ValidationError(serializer.errors)
 
         self.perform_create(serializer)
+        # Tasdiqlash kodi darhol yuboriladi (xat fonda; xato ro'yxatdan o'tishni buzmaydi)
+        email_verify.send_code(serializer.instance)
         response = Response(serializer.data, status=status.HTTP_201_CREATED, headers=self.get_success_headers(serializer.data))
         security_logger.info(
             "Yangi bemor ro'yxatdan o'tdi: %s (IP: %s)",
@@ -143,6 +145,50 @@ class MeView(APIView):
         return Response(UserPublicSerializer(request.user, context={"request": request}).data)
 
 
+class EmailSendCodeView(APIView):
+    """Joriy foydalanuvchining emailiga tasdiqlash kodini (qayta) yuboradi."""
+
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "email_verify"
+
+    def post(self, request):
+        result = email_verify.send_code(request.user)
+        if result == email_verify.OK:
+            return Response({"detail": "Kod yuborildi.", "code": result})
+        messages = {
+            email_verify.ALREADY: "Email allaqachon tasdiqlangan.",
+            email_verify.NO_EMAIL: "Hisobda email yo'q.",
+            email_verify.COOLDOWN: "Kodni qayta yuborishdan oldin bir daqiqa kuting.",
+            email_verify.DAILY: "Bugun uchun kod yuborish chegarasi tugadi. Ertaga qayta urinib ko'ring.",
+        }
+        code = status.HTTP_429_TOO_MANY_REQUESTS if result in (email_verify.COOLDOWN, email_verify.DAILY) \
+            else status.HTTP_400_BAD_REQUEST
+        return Response({"detail": messages[result], "code": result}, status=code)
+
+
+class EmailVerifyView(APIView):
+    """6 xonali kod bilan emailni tasdiqlash."""
+
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "email_verify"
+
+    def post(self, request):
+        result = email_verify.verify_code(request.user, request.data.get("code", ""))
+        if result in (email_verify.OK, email_verify.ALREADY):
+            if result == email_verify.OK:
+                from records.audit import log_audit
+                log_audit(request.user, "update", detail="Email tasdiqlandi")
+            return Response({"detail": "Email tasdiqlandi.", "code": result, "email_verified": True})
+        messages = {
+            email_verify.NO_CODE: "Kod topilmadi yoki muddati tugagan. Yangi kod so'rang.",
+            email_verify.INVALID: "Kod noto'g'ri.",
+            email_verify.TOO_MANY: "Juda ko'p noto'g'ri urinish. Yangi kod so'rang.",
+        }
+        return Response({"detail": messages[result], "code": result}, status=status.HTTP_400_BAD_REQUEST)
+
+
 class AdminUserListCreateView(generics.ListCreateAPIView):
     """
     Administrator panel: barcha foydalanuvchilarni ko'rish va
@@ -195,6 +241,10 @@ class AdminUserDetailView(generics.RetrieveUpdateDestroyAPIView):
             return mask_email(e) if e else "—"
 
         admin = self.request.user
+        # Administrator kiritgan email tasdiqlangan hisoblanadi; eski emailga yuborilgan kod bekor
+        user.email_verified = bool(user.email)
+        user.save(update_fields=["email_verified"])
+        email_verify.reset_pending(user.pk)
         log_audit(admin, "update", detail=f"Email o'zgartirildi: {user.username} ({masked(old_email)} → {masked(user.email)})")
         security_logger.warning("Administrator %s %s hisobining emailini o'zgartirdi: %s -> %s",
                                 admin.username, user.username, masked(old_email), masked(user.email))

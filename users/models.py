@@ -27,6 +27,9 @@ class User(AbstractUser):
     # yangi parol o'rnatilmaguncha token berilmaydi, muddati o'tsa parol ishlamaydi.
     must_change_password = models.BooleanField(default=False)
     temp_password_expires = models.DateTimeField(null=True, blank=True)
+    # Email egasi tasdiqlanganmi (users/email_verify.py). Parolni tiklash faqat tasdiqlangan emailga
+    # ishlaydi. Administrator kiritgan email tasdiqlangan hisoblanadi (u auditda qayd etiladi).
+    email_verified = models.BooleanField(default=False)
 
     class Meta(AbstractUser.Meta):
         constraints = [

@@ -981,3 +981,33 @@ class ImportAvatarPhotosTests(APITestCase):
         self.assertTrue(a.avatar.storage.exists(a.avatar.name))                              # avatar joyida
         call_command("import_avatar_photos", stdout=StringIO())                               # qayta - hech narsa
         self.assertEqual(PatientPhoto.objects.count(), 2)
+
+
+class PatientIdorTests(APITestCase):
+    """E1 (IDOR): bemor boshqa bemorning profili, tarixi va rasmini ochmaydi, profilini o'zgartirmaydi.
+    Tahdid modelini mutatsiya bilan tekshirishda topilgan bo'shliq: obyekt darajasidagi tekshiruv
+    o'chirilganda hech bir unit test buni sezmagan (2026-11-09)."""
+
+    def setUp(self):
+        self.pu1 = User.objects.create_user(username="idor_a", password="x", role=Role.PATIENT)
+        self.pu2 = User.objects.create_user(username="idor_b", password="x", role=Role.PATIENT)
+        self.p1 = Patient.objects.get(user=self.pu1)
+        self.p2 = Patient.objects.get(user=self.pu2)
+        self.client.force_authenticate(self.pu1)
+
+    def test_own_profile_is_readable(self):
+        self.assertEqual(self.client.get(f"/api/records/patients/{self.p1.id}/").status_code, 200)
+
+    def test_other_patient_profile_is_hidden(self):
+        r = self.client.get(f"/api/records/patients/{self.p2.id}/")
+        self.assertIn(r.status_code, (403, 404))
+        self.assertNotIn("idor_b", r.content.decode())
+
+    def test_other_patient_history_pdf_is_hidden(self):
+        r = self.client.get(f"/api/records/patients/{self.p2.id}/history-pdf/")
+        self.assertIn(r.status_code, (403, 404))
+
+    def test_patient_cannot_edit_any_profile(self):
+        for pid in (self.p1.id, self.p2.id):
+            r = self.client.patch(f"/api/records/patients/{pid}/", {"address": "x"}, format="json")
+            self.assertIn(r.status_code, (403, 404), pid)

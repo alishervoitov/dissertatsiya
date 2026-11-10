@@ -3,6 +3,7 @@ Avatar yuklash testlari (pentest 2026-10-19, 2/3/4-bandlar).
 Ishlatish: python manage.py test users --settings=config.settings_test
 """
 import os
+import secrets
 import re
 import struct
 import zlib
@@ -30,7 +31,10 @@ from .avatar import _normalize_mode
 from .models import LoginSession, User
 from .models import Role
 from .security import MAX_FAILED_ATTEMPTS, REGISTER_TAKEN_LIMIT, is_reserved_username
-from .serializers import LOGIN_FAILED_MESSAGE, USERNAME_RESERVED_MESSAGE, USERNAME_TAKEN_MESSAGE
+from .serializers import (
+    EMAIL_REQUIRED_MESSAGE, EMAIL_TAKEN_MESSAGE, LOGIN_FAILED_MESSAGE, STAFF_EMAIL_REQUIRED_MESSAGE,
+    USERNAME_RESERVED_MESSAGE, USERNAME_TAKEN_MESSAGE,
+)
 from .tasks import request_password_reset
 
 AVATAR_URL = "/api/auth/me/avatar/"
@@ -463,7 +467,8 @@ class ReservedUsernameTests(APITestCase):
 
     def register(self, username, password=STRONG_PASSWORD, ip="10.6.6.6"):
         payload = {
-            "username": username, "first_name": "Test", "last_name": "User", "email": "", "phone": "",
+            "username": username, "first_name": "Test", "last_name": "User",
+            "email": f"u{secrets.token_hex(4)}@example.com", "phone": "",
             "password": password, "password_confirm": password,
         }
         return self.client.post(REGISTER_URL, payload, format="json", HTTP_X_FORWARDED_FOR=ip)
@@ -509,7 +514,7 @@ class ReservedUsernameTests(APITestCase):
         admin = User.objects.create_user(username="chief", password=STRONG_PASSWORD, role=Role.ADMIN)
         self.client.force_authenticate(admin)
         response = self.client.post(ADMIN_USERS_URL, {
-            "username": "support", "first_name": "Xizmat", "last_name": "Hisobi", "email": "",
+            "username": "support", "first_name": "Xizmat", "last_name": "Hisobi", "email": "support@example.com",
             "phone": "", "password": STRONG_PASSWORD, "role": Role.DOCTOR,
         }, format="json")
         self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.content)
@@ -526,7 +531,8 @@ class CaseInsensitiveUsernameTests(APITestCase):
 
     def register(self, username, ip="10.7.7.7"):
         return self.client.post(REGISTER_URL, {
-            "username": username, "first_name": "Test", "last_name": "User", "email": "", "phone": "",
+            "username": username, "first_name": "Test", "last_name": "User",
+            "email": f"u{secrets.token_hex(4)}@example.com", "phone": "",
             "password": STRONG_PASSWORD, "password_confirm": STRONG_PASSWORD,
         }, format="json", HTTP_X_FORWARDED_FOR=ip)
 
@@ -546,7 +552,7 @@ class CaseInsensitiveUsernameTests(APITestCase):
     def test_admin_create_case_variant_rejected(self):
         self.client.force_authenticate(self.admin)
         response = self.client.post(ADMIN_USERS_URL, {
-            "username": "ALISHER", "first_name": "A", "last_name": "B", "email": "", "phone": "",
+            "username": "ALISHER", "first_name": "A", "last_name": "B", "email": "alisher.up@example.com", "phone": "",
             "password": STRONG_PASSWORD, "role": Role.DOCTOR,
         }, format="json")
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST, response.content)
@@ -692,7 +698,7 @@ class OptionsMetadataTests(APITestCase):
 
     def test_register_post_still_works(self):
         response = self.client.post(REGISTER_URL, {
-            "username": "optionsuser", "first_name": "A", "last_name": "B", "email": "", "phone": "",
+            "username": "optionsuser", "first_name": "A", "last_name": "B", "email": "opt@example.com", "phone": "",
             "password": STRONG_PASSWORD, "password_confirm": STRONG_PASSWORD,
         }, format="json")
         self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.content)
@@ -1070,3 +1076,93 @@ class PasswordMessageLanguageTests(APITestCase):
 
     def test_unknown_language_falls_back_to_english(self, _):
         self.assertIn("entirely numeric", str(self.register("de", password="1234567890").data))
+
+
+@mock.patch.object(ScopedRateThrottle, "allow_request", return_value=True)
+class EmailRequirementTests(APITestCase):
+    """Email: onlayn ro'yxatdan o'tishda va xodim hisoblarida majburiy, registga sezgir emas holda
+    takrorlanmas; registratura bemorlarida ixtiyoriy (2026-11-10)."""
+
+    def setUp(self):
+        cache.clear()
+        self.admin = User.objects.create_user(username="em_admin", password=STRONG_PASSWORD, role=Role.ADMIN,
+                                              email="em_admin@example.com")
+
+    def register(self, username, email, ip="10.9.9.9"):
+        return self.client.post(REGISTER_URL, {
+            "username": username, "first_name": "Test", "last_name": "User", "email": email, "phone": "",
+            "password": STRONG_PASSWORD, "password_confirm": STRONG_PASSWORD,
+        }, format="json", HTTP_X_FORWARDED_FOR=ip)
+
+    def create_staff(self, username, email, role=Role.DOCTOR):
+        self.client.force_authenticate(self.admin)
+        return self.client.post(ADMIN_USERS_URL, {
+            "username": username, "first_name": "A", "last_name": "B", "email": email, "phone": "",
+            "password": STRONG_PASSWORD, "role": role,
+        }, format="json")
+
+    def test_register_requires_email(self, _):
+        for email in ("", "   "):
+            r = self.register("noemail", email)
+            self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST)
+            self.assertEqual(r.json()["email"], [EMAIL_REQUIRED_MESSAGE])
+        r = self.client.post(REGISTER_URL, {
+            "username": "noemail2", "first_name": "T", "last_name": "U", "phone": "",
+            "password": STRONG_PASSWORD, "password_confirm": STRONG_PASSWORD}, format="json")
+        self.assertEqual(r.json()["email"], [EMAIL_REQUIRED_MESSAGE])
+        self.assertFalse(User.objects.filter(username__startswith="noemail").exists())
+
+    def test_register_rejects_invalid_email(self, _):
+        self.assertEqual(self.register("bademail", "not-an-email").status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_register_normalizes_email(self, _):
+        self.assertEqual(self.register("normed", "  Bemor.One@Example.COM ").status_code, status.HTTP_201_CREATED)
+        self.assertEqual(User.objects.get(username="normed").email, "bemor.one@example.com")
+
+    def test_duplicate_email_rejected_case_insensitive_and_counted(self, _):
+        self.assertEqual(self.register("first", "same@example.com").status_code, status.HTTP_201_CREATED)
+        r = self.register("second", "SAME@example.com")
+        self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(r.json()["email"], [EMAIL_TAKEN_MESSAGE])
+        # Band email ham "band nom" kabi IP bo'yicha cheklanadi (hisob borligini bilib olish)
+        for _ in range(REGISTER_TAKEN_LIMIT):
+            self.register("again", "same@example.com", ip="10.9.9.10")
+        r = self.register("brandnew", "fresh@example.com", ip="10.9.9.10")
+        self.assertEqual(r.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+
+    def test_staff_requires_email(self, _):
+        for role in (Role.DOCTOR, Role.LAB, Role.ADMIN):
+            r = self.create_staff(f"staff_{role}", "", role)
+            self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST, role)
+            self.assertEqual(r.json()["email"], [STAFF_EMAIL_REQUIRED_MESSAGE])
+        r = self.create_staff("staff_ok", "Doc@Example.com")
+        self.assertEqual(r.status_code, status.HTTP_201_CREATED, r.content)
+        self.assertEqual(User.objects.get(username="staff_ok").email, "doc@example.com")
+
+    def test_staff_duplicate_email_rejected(self, _):
+        r = self.create_staff("dup_doc", "EM_ADMIN@example.com")
+        self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(r.json()["email"], [EMAIL_TAKEN_MESSAGE])
+
+    def test_admin_cannot_blank_staff_email(self, _):
+        doc = User.objects.create_user(username="doc_em", password=STRONG_PASSWORD, role=Role.DOCTOR,
+                                       email="doc_em@example.com")
+        self.client.force_authenticate(self.admin)
+        r = self.client.patch(f"{ADMIN_USERS_URL}{doc.id}/", {"email": ""}, format="json")
+        self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST)
+        r = self.client.patch(f"{ADMIN_USERS_URL}{doc.id}/", {"email": "em_admin@example.com"}, format="json")
+        self.assertEqual(r.json()["email"], [EMAIL_TAKEN_MESSAGE])
+        r = self.client.patch(f"{ADMIN_USERS_URL}{doc.id}/", {"email": "Doc_EM@example.com"}, format="json")
+        self.assertEqual(r.status_code, status.HTTP_200_OK, r.content)
+
+    def test_legacy_staff_without_email_can_still_be_toggled(self, _):
+        old = User.objects.create_user(username="old_doc", password=STRONG_PASSWORD, role=Role.DOCTOR)
+        self.client.force_authenticate(self.admin)
+        r = self.client.patch(f"{ADMIN_USERS_URL}{old.id}/", {"is_active": False}, format="json")
+        self.assertEqual(r.status_code, status.HTTP_200_OK, r.content)
+
+    def test_patient_email_may_be_blank_on_admin_edit(self, _):
+        p = User.objects.create_user(username="reg_pt", password=STRONG_PASSWORD, role=Role.PATIENT)
+        self.client.force_authenticate(self.admin)
+        r = self.client.patch(f"{ADMIN_USERS_URL}{p.id}/", {"email": ""}, format="json")
+        self.assertEqual(r.status_code, status.HTTP_200_OK, r.content)

@@ -52,6 +52,10 @@ class RegisterView(generics.CreateAPIView):
             if any(error.code == "unique" for error in serializer.errors.get("username", [])):
                 record_register_taken(ident)
                 security_logger.warning("Register: band username so'raldi (IP: %s)", ident)
+            # Band email ham hisob borligini bildiradi: xuddi shu IP cheklovi (pentest 5-band)
+            if any(error.code == "unique" for error in serializer.errors.get("email", [])):
+                record_register_taken(ident)
+                security_logger.warning("Register: band email so'raldi (IP: %s)", ident)
             raise ValidationError(serializer.errors)
 
         self.perform_create(serializer)

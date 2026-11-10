@@ -21,6 +21,25 @@ from .security import (
 # Username'ni qaytarmaydi; view "unique" kodi bo'yicha bunday javoblarni sanaydi (5-band).
 USERNAME_TAKEN_MESSAGE = "Bu foydalanuvchi nomi band, boshqasini tanlang."
 USERNAME_RESERVED_MESSAGE = "Bu foydalanuvchi nomidan foydalanib bo'lmaydi."
+EMAIL_TAKEN_MESSAGE = "Bu email bilan hisob allaqachon mavjud."
+EMAIL_REQUIRED_MESSAGE = "Email kiritilishi shart."
+STAFF_EMAIL_REQUIRED_MESSAGE = "Xodim hisobi uchun email majburiy."
+
+
+def normalize_email(value):
+    return (value or "").strip().lower()
+
+
+def check_email_unique(email, exclude_pk=None):
+    """Email registrga sezgir emas holda takrorlanmas (parolni tiklash email bo'yicha hisob topadi).
+    Bo'sh email (registratura bemorlari) tekshirilmaydi."""
+    if not email:
+        return
+    qs = User.objects.filter(email__iexact=email)
+    if exclude_pk:
+        qs = qs.exclude(pk=exclude_pk)
+    if qs.exists():
+        raise serializers.ValidationError(EMAIL_TAKEN_MESSAGE, code="unique")
 # Noto'g'ri parol, mavjud bo'lmagan hisob va bloklangan hisob uchun bir xil javob (5-band).
 LOGIN_FAILED_MESSAGE = "Login yoki parol noto'g'ri, yoki hisob vaqtincha bloklangan."
 TEMP_PASSWORD_EXPIRED_MESSAGE = ("Vaqtinchalik parolning muddati tugagan. "
@@ -55,6 +74,10 @@ class RegisterSerializer(serializers.ModelSerializer):
 
     password = serializers.CharField(write_only=True, min_length=10)
     password_confirm = serializers.CharField(write_only=True, min_length=10)
+    # Onlayn ro'yxatdan o'tishda email majburiy (parolni tiklash va bildirishnomalar uchun).
+    # Registraturada yaratilgan bemorlarda email ixtiyoriy - ular bu serializer'dan o'tmaydi.
+    email = serializers.EmailField(max_length=254, error_messages={
+        "required": EMAIL_REQUIRED_MESSAGE, "blank": EMAIL_REQUIRED_MESSAGE})
 
     class Meta:
         model = User
@@ -72,6 +95,11 @@ class RegisterSerializer(serializers.ModelSerializer):
                 ],
             },
         }
+
+    def validate_email(self, value):
+        value = normalize_email(value)
+        check_email_unique(value)
+        return value
 
     def validate(self, attrs):
         if attrs["password"] != attrs.pop("password_confirm"):
@@ -103,6 +131,7 @@ class AdminCreateUserSerializer(serializers.ModelSerializer):
     # Shifokor yaratilganda darhol qabul sozlamalari (navbatda shu yo'nalish bo'yicha topiladi)
     specialty = serializers.CharField(write_only=True, required=False, allow_blank=True, max_length=30)
     room = serializers.CharField(write_only=True, required=False, allow_blank=True, max_length=20)
+    email = serializers.EmailField(max_length=254, required=False, allow_blank=True)
 
     class Meta:
         model = User
@@ -124,6 +153,18 @@ class AdminCreateUserSerializer(serializers.ModelSerializer):
         )
         password_validation.validate_password(value, probe)
         return value
+
+    def validate_email(self, value):
+        value = normalize_email(value)
+        check_email_unique(value)
+        return value
+
+    def validate(self, attrs):
+        # Xodim (shifokor, laborant, administrator) uchun email majburiy: parolni tiklash va
+        # xavfsizlik bildirishnomalari shu orqali boradi.
+        if attrs.get("role", Role.PATIENT) != Role.PATIENT and not attrs.get("email"):
+            raise serializers.ValidationError({"email": STAFF_EMAIL_REQUIRED_MESSAGE})
+        return attrs
 
     def validate_specialty(self, value):
         from appointments.models import Specialty
@@ -239,6 +280,15 @@ class AdminUserListSerializer(UserPublicSerializer):
 
     class Meta(UserPublicSerializer.Meta):
         fields = UserPublicSerializer.Meta.fields + ["is_active", "specialty", "room"]
+
+    def validate_email(self, value):
+        value = normalize_email(value)
+        # Mavjud xodimning emailini o'chirib bo'lmaydi. Faqat email yuborilganda tekshiriladi:
+        # emaili bo'lmagan eski xodimni faollashtirish/faolsizlantirish to'silmaydi.
+        if not value and self.instance and self.instance.role != Role.PATIENT:
+            raise serializers.ValidationError(STAFF_EMAIL_REQUIRED_MESSAGE)
+        check_email_unique(value, exclude_pk=self.instance.pk if self.instance else None)
+        return value
 
     def validate_is_active(self, value):
         # Administrator o'z hisobini o'chirib qo'yib, tizimdan qulflanib qolmasin

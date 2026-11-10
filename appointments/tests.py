@@ -266,7 +266,7 @@ class AdminDoctorSpecialtyTests(QueueTestBase):
     def test_admin_creates_doctor_with_specialty(self):
         self.client.force_authenticate(self.admin)
         r = self.client.post("/api/auth/users/", {
-            "username": "newdoc", "first_name": "Kamola", "last_name": "Aliyeva", "email": "",
+            "username": "newdoc", "first_name": "Kamola", "last_name": "Aliyeva", "email": "kamola@example.com",
             "phone": "", "password": "Xk9#mPq2$vLw", "role": "doctor", "specialty": "dentist", "room": "3",
         }, format="json")
         self.assertEqual(r.status_code, 201, r.data)

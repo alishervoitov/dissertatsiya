@@ -1,4 +1,7 @@
+import re
+
 from django.contrib.auth import password_validation
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.contrib.auth.validators import UnicodeUsernameValidator
 from django.db import transaction
 from rest_framework import serializers
@@ -309,3 +312,109 @@ class AdminUserListSerializer(UserPublicSerializer):
     def get_room(self, obj):
         p = self._profile(obj)
         return p.room if p else None
+
+
+# ---- Foydalanuvchi o'z profilini tahrirlashi (PATCH /api/auth/me/) ----
+
+SELF_EMAIL_STAFF_MESSAGE = "Xodim emaili administrator orqali o'zgartiriladi."
+SELF_EMAIL_CLEAR_MESSAGE = "Emailni o'chirib bo'lmaydi, faqat boshqasiga almashtirish mumkin."
+WRONG_PASSWORD_MESSAGE = "Joriy parol noto'g'ri."
+PHONE_INVALID_MESSAGE = "Telefon raqami noto'g'ri. Masalan: +998901234567"
+DOB_LOCKED_MESSAGE = "Tug'ilgan sanani faqat registratura o'zgartiradi."
+
+_PHONE_RE = re.compile(r"^\+?\d{9,15}$")
+# Bemor o'zi o'zgartira oladigan bemor profili maydonlari. Qon guruhi, allergiyalar, F.I.Sh. va
+# hujjat raqami bu yerda YO'Q: ularni shifokor yoki registratura tasdiqlab kiritadi.
+PATIENT_SELF_FIELDS = ("address", "emergency_contact", "gender", "date_of_birth")
+
+
+def normalize_phone(value):
+    phone = "".join(ch for ch in (value or "") if ch not in " -()")
+    if phone and not _PHONE_RE.match(phone):
+        raise serializers.ValidationError(PHONE_INVALID_MESSAGE)
+    return phone
+
+
+class SelfProfileSerializer(serializers.Serializer):
+    """Aloqa ma'lumotlari. context: user, patient (bemor bo'lmasa None).
+    Email o'zgarsa joriy parol so'raladi: o'g'irlangan sessiya bilan emailni almashtirib,
+    keyin parolni tiklash orqali hisobni butunlay egallab bo'lmasin."""
+
+    phone = serializers.CharField(required=False, allow_blank=True, max_length=30)
+    email = serializers.EmailField(required=False, allow_blank=True, max_length=254)
+    current_password = serializers.CharField(required=False, allow_blank=True, write_only=True, max_length=200)
+    address = serializers.CharField(required=False, allow_blank=True, max_length=300)
+    emergency_contact = serializers.CharField(required=False, allow_blank=True, max_length=100)
+    gender = serializers.ChoiceField(choices=["M", "F", "O", ""], required=False)
+    date_of_birth = serializers.DateField(required=False, allow_null=True)
+
+    def validate_phone(self, value):
+        return normalize_phone(value)
+
+    def validate_date_of_birth(self, value):
+        from django.utils import timezone
+        if value and (value > timezone.localdate() or value.year < 1900):
+            raise serializers.ValidationError("Tug'ilgan sana noto'g'ri.")
+        return value
+
+    def validate(self, attrs):
+        user, patient = self.context["user"], self.context.get("patient")
+        password = attrs.pop("current_password", "")
+
+        if "email" in attrs:
+            new = normalize_email(attrs["email"])
+            if new == normalize_email(user.email):
+                attrs.pop("email")
+            elif user.role != Role.PATIENT:
+                raise serializers.ValidationError({"email": SELF_EMAIL_STAFF_MESSAGE})
+            elif not new:
+                raise serializers.ValidationError({"email": SELF_EMAIL_CLEAR_MESSAGE})
+            else:
+                try:
+                    check_email_unique(new, exclude_pk=user.pk)
+                except serializers.ValidationError as e:
+                    raise serializers.ValidationError({"email": e.detail})
+                if not password or not user.check_password(password):
+                    raise serializers.ValidationError({"current_password": WRONG_PASSWORD_MESSAGE})
+                attrs["email"] = new
+
+        if patient is None:
+            for f in PATIENT_SELF_FIELDS:
+                attrs.pop(f, None)
+        else:
+            if "date_of_birth" in attrs:
+                dob = attrs["date_of_birth"]
+                if dob is None or dob == patient.date_of_birth:
+                    attrs.pop("date_of_birth")
+                elif patient.date_of_birth:
+                    raise serializers.ValidationError({"date_of_birth": DOB_LOCKED_MESSAGE})
+            for f in ("address", "emergency_contact"):
+                if f in attrs:
+                    attrs[f] = attrs[f].strip()
+        return attrs
+
+
+class PasswordChangeSerializer(serializers.Serializer):
+    """Tizimga kirgan foydalanuvchi parolini almashtiradi. context: user."""
+
+    current_password = serializers.CharField(write_only=True, max_length=200)
+    new_password = serializers.CharField(write_only=True, max_length=200)
+    new_password_confirm = serializers.CharField(write_only=True, max_length=200)
+    code = serializers.CharField(required=False, allow_blank=True, write_only=True, max_length=20)
+
+    def validate(self, attrs):
+        user = self.context["user"]
+        if not user.check_password(attrs["current_password"]):
+            raise serializers.ValidationError({"current_password": WRONG_PASSWORD_MESSAGE}, code="wrong_password")
+        if attrs["new_password"] != attrs["new_password_confirm"]:
+            raise serializers.ValidationError({"new_password_confirm": "Parollar mos kelmadi."})
+        if attrs["new_password"] == attrs["current_password"]:
+            raise serializers.ValidationError({"new_password": "Yangi parol joriy paroldan farq qilishi kerak."})
+        try:
+            password_validation.validate_password(attrs["new_password"], user)
+        except DjangoValidationError as e:
+            raise serializers.ValidationError({"new_password": list(e.messages)})
+        from . import mfa
+        if mfa.enabled_device(user) and not mfa.verify_any(user, attrs.get("code")):
+            raise serializers.ValidationError({"code": "Ikki bosqichli kirish kodi noto'g'ri."}, code="mfa_invalid")
+        return attrs

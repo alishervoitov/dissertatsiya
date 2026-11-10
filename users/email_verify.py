@@ -111,5 +111,6 @@ def verify_code(user, code):
 
 
 def reset_pending(user_id):
-    """Email o'zgarganda kutilayotgan kod bekor qilinadi (u eski emailga bog'langan)."""
-    cache.delete(_key(user_id))
+    """Email o'zgarganda kutilayotgan kod bekor qilinadi (u eski emailga bog'langan).
+    60 soniyalik kutish ham olib tashlanadi - yangi emailga kod darhol ketsin (kunlik limit qoladi)."""
+    cache.delete_many([_key(user_id), f"emailv:cd:{user_id}"])

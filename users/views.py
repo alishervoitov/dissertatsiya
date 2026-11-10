@@ -18,7 +18,10 @@ from .serializers import (
     AdminCreateUserSerializer,
     AdminUserListSerializer,
     CustomTokenObtainPairSerializer,
+    PATIENT_SELF_FIELDS,
+    PasswordChangeSerializer,
     RegisterSerializer,
+    SelfProfileSerializer,
     UserPublicSerializer,
 )
 from django.contrib.auth.tokens import default_token_generator
@@ -138,11 +141,121 @@ class LogoutView(APIView):
         return clear_refresh_cookie(Response(status=status.HTTP_205_RESET_CONTENT))
 
 
+def _security_notice(user, email, subject, body):
+    """Ogohlantirish xatini tranzaksiya tugagach navbatga qo'yadi (Celery ishlamasa so'rov buzilmaydi)."""
+    if not email:
+        return
+    from .tasks import send_security_notice
+    name = user.get_full_name() or user.username
+
+    def enqueue():
+        try:
+            send_security_notice.delay(email, name, subject, body)
+        except Exception:  # noqa: BLE001
+            security_logger.exception("Xavfsizlik xati navbatga qo'yilmadi")
+
+    transaction.on_commit(enqueue)
+
+
 class MeView(APIView):
+    """GET - joriy foydalanuvchi. PATCH - o'z aloqa ma'lumotlarini tahrirlash (users/serializers.py
+    SelfProfileSerializer: qaysi maydonlarni bemor o'zi o'zgartira olishi o'sha yerda)."""
+
     permission_classes = [permissions.IsAuthenticated]
+
+    def get_throttles(self):
+        if self.request.method == "PATCH":
+            self.throttle_scope = "profile_update"
+            return [ScopedRateThrottle()]
+        return super().get_throttles()
 
     def get(self, request):
         return Response(UserPublicSerializer(request.user, context={"request": request}).data)
+
+    def patch(self, request):
+        from records.audit import log_audit
+        from records.models import Patient
+
+        user = request.user
+        patient = Patient.objects.filter(user=user).first() if user.role == Role.PATIENT else None
+        ser = SelfProfileSerializer(data=request.data, context={"user": user, "patient": patient})
+        ser.is_valid(raise_exception=True)
+        data = ser.validated_data
+
+        changed = []
+        old_email, old_verified = user.email, user.email_verified
+        with transaction.atomic():
+            user_fields = []
+            if "phone" in data and data["phone"] != user.phone:
+                user.phone = data["phone"]
+                user_fields.append("phone")
+            if "email" in data:
+                user.email = data["email"]
+                user.email_verified = False
+                user_fields += ["email", "email_verified"]
+            if user_fields:
+                user.save(update_fields=user_fields)
+                changed += [f for f in user_fields if f != "email_verified"]
+            if patient is not None:
+                p_fields = [f for f in PATIENT_SELF_FIELDS if f in data and data[f] != getattr(patient, f)]
+                for f in p_fields:
+                    setattr(patient, f, data[f])
+                if p_fields:
+                    patient.save(update_fields=p_fields + ["updated_at"])
+                    changed += p_fields
+            if changed:
+                # Qiymatlar yozilmaydi (manzil, telefon shifrlangan/shaxsiy), faqat maydon nomlari
+                detail = "O'z profilini tahrirladi: " + ", ".join(changed)
+                if "email" in data:
+                    detail += f" ({mask_email(old_email) if old_email else '—'} → {mask_email(user.email)})"
+                log_audit(user, "update", patient=patient, detail=detail)
+
+        if "email" in data:
+            email_verify.reset_pending(user.pk)
+            email_verify.send_code(user)
+            security_logger.warning("Foydalanuvchi %s emailini o'zgartirdi: %s -> %s (IP: %s)", user.username,
+                                    mask_email(old_email) if old_email else "—", mask_email(user.email),
+                                    client_ident(request))
+            if old_email and old_verified:
+                _security_notice(user, old_email, "email o'zgartirildi",
+                                 f"Hisobingiz emaili {mask_email(user.email)} manziliga o'zgartirildi.")
+        return Response(UserPublicSerializer(user, context={"request": request}).data)
+
+
+class PasswordChangeView(APIView):
+    """POST {current_password, new_password, new_password_confirm, code?} - tizimga kirgan foydalanuvchi
+    parolini almashtiradi. Joriy qurilma qoladi, boshqa barcha qurilmalardan chiqariladi (parol sizib
+    chiqqan bo'lsa, begona sessiya ham yopilsin). 2FA yoqilgan bo'lsa kod ham so'raladi."""
+
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "password_change"
+
+    def post(self, request):
+        from records.audit import log_audit
+
+        user = request.user
+        ser = PasswordChangeSerializer(data=request.data, context={"user": user})
+        if not ser.is_valid():
+            if "current_password" in ser.errors or "code" in ser.errors:
+                security_logger.warning("Parolni almashtirish: noto'g'ri parol yoki kod: %s (IP: %s)",
+                                        user.username, client_ident(request))
+            return Response(ser.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        sid = request.auth.get(sessions.SID_CLAIM) if request.auth else None
+        with transaction.atomic():
+            from . import temp_password
+            user.set_password(ser.validated_data["new_password"])
+            temp_password.clear(user)
+            user.save(update_fields=["password", "must_change_password", "temp_password_expires"])
+            revoked = revoke_refresh_tokens(user, keep_jti=sid or "__none__")
+            log_audit(user, "update", detail=f"Parol o'zgartirildi ({revoked} ta boshqa qurilmadan chiqarildi)")
+            if user.email and user.email_verified:
+                _security_notice(user, user.email, "parol o'zgartirildi",
+                                 "Hisobingiz paroli o'zgartirildi. Boshqa qurilmalardagi sessiyalar yopildi.")
+        security_logger.info("Parol o'zgartirildi: %s (%s ta sessiya yopildi, IP: %s)",
+                             user.username, revoked, client_ident(request))
+        return Response({"detail": "Parol o'zgartirildi.", "revoked": revoked})
 
 
 class EmailSendCodeView(APIView):

@@ -1369,3 +1369,204 @@ class EmailVerificationTests(APITestCase):
         self.assertEqual(r.status_code, 201, r.content)
         self.assertTrue(User.objects.get(username="v_doc").email_verified)
         self.assertEqual(len(mail.outbox), 0)  # xodimga kod yuborilmaydi
+
+
+@mock.patch.object(ScopedRateThrottle, "allow_request", return_value=True)
+class SelfProfileEditTests(APITestCase):
+    """Foydalanuvchi o'z aloqa ma'lumotlarini tahrirlaydi; tibbiy va shaxsni tasdiqlovchi maydonlar
+    (qon guruhi, allergiya, F.I.Sh., hujjat raqami) bemor uchun yopiq (2026-11-10)."""
+
+    URL = "/api/auth/me/"
+
+    def setUp(self):
+        from records.models import Patient
+        cache.clear()
+        mail.outbox = []
+        for target in ("users.email_verify.transaction.on_commit", "users.views.transaction.on_commit"):
+            patcher = mock.patch(target, side_effect=lambda fn: fn())
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.user = User.objects.create_user(username="selfp", password=STRONG_PASSWORD, role=Role.PATIENT,
+                                             first_name="Ali", last_name="Valiyev",
+                                             email="selfp@example.com", email_verified=True)
+        self.patient, _ = Patient.objects.get_or_create(user=self.user)
+        self.patient.blood_type, self.patient.allergies = "A+", "Penitsillin"
+        self.patient.save()
+        self.client.force_authenticate(self.user)
+
+    def test_patient_updates_contact_fields_and_audit_has_no_values(self, _):
+        from records.models import AuditLog
+        r = self.client.patch(self.URL, {"phone": "+998 90 123-45-67", "address": "Andijon, Bobur ko'chasi 5",
+                                         "emergency_contact": "Onasi +998901112233", "gender": "M",
+                                         "date_of_birth": "1999-05-01"}, format="json")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.user.refresh_from_db()
+        self.patient.refresh_from_db()
+        self.assertEqual(self.user.phone, "+998901234567")
+        self.assertEqual(self.patient.address, "Andijon, Bobur ko'chasi 5")
+        self.assertEqual(self.patient.gender, "M")
+        self.assertEqual(str(self.patient.date_of_birth), "1999-05-01")
+        log = AuditLog.objects.filter(actor=self.user, action="update").latest("id")
+        self.assertIn("address", log.detail)
+        self.assertNotIn("Bobur", log.detail)
+        self.assertNotIn("998", log.detail)
+
+    def test_medical_and_identity_fields_are_ignored(self, _):
+        r = self.client.patch(self.URL, {"blood_type": "O-", "allergies": "", "first_name": "Boshqa",
+                                         "last_name": "Odam", "national_id": "AA1234567", "role": "admin",
+                                         "username": "hacker", "email_verified": True}, format="json")
+        self.assertEqual(r.status_code, 200)
+        self.user.refresh_from_db()
+        self.patient.refresh_from_db()
+        self.assertEqual((self.patient.blood_type, self.patient.allergies), ("A+", "Penitsillin"))
+        self.assertEqual((self.user.first_name, self.user.username, self.user.role), ("Ali", "selfp", Role.PATIENT))
+        self.assertEqual(self.patient.national_id, "")
+
+    def test_invalid_phone_rejected(self, _):
+        r = self.client.patch(self.URL, {"phone": "<script>"}, format="json")
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("phone", r.json())
+
+    def test_date_of_birth_set_once(self, _):
+        self.assertEqual(self.client.patch(self.URL, {"date_of_birth": "2000-01-01"}, format="json").status_code, 200)
+        r = self.client.patch(self.URL, {"date_of_birth": "1990-01-01"}, format="json")
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("date_of_birth", r.json())
+        self.assertEqual(self.client.patch(self.URL, {"date_of_birth": "2999-01-01"}, format="json").status_code, 400)
+
+    def test_email_change_requires_password_and_reverifies(self, _):
+        r = self.client.patch(self.URL, {"email": "new@example.com"}, format="json")
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("current_password", r.json())
+        r = self.client.patch(self.URL, {"email": "new@example.com", "current_password": "wrong"}, format="json")
+        self.assertEqual(r.status_code, 400)
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.email, "selfp@example.com")
+
+        r = self.client.patch(self.URL, {"email": "New@Example.com", "current_password": STRONG_PASSWORD}, format="json")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.email, "new@example.com")
+        self.assertFalse(self.user.email_verified)
+        to = {tuple(m.to): m for m in mail.outbox}
+        self.assertRegex(to[("new@example.com",)].body, r"kodi: \d{6}")           # yangi emailga kod
+        self.assertIn("email o'zgartirildi", to[("selfp@example.com",)].subject)  # eskisiga ogohlantirish
+        self.assertNotIn("new@example.com", to[("selfp@example.com",)].body)     # niqoblangan
+
+    def test_email_change_rejects_taken_and_blank(self, _):
+        User.objects.create_user(username="other1", password=STRONG_PASSWORD, email="taken@example.com")
+        r = self.client.patch(self.URL, {"email": "TAKEN@example.com", "current_password": STRONG_PASSWORD}, format="json")
+        self.assertEqual(r.status_code, 400)
+        r = self.client.patch(self.URL, {"email": "", "current_password": STRONG_PASSWORD}, format="json")
+        self.assertEqual(r.status_code, 400)
+
+    def test_same_email_is_noop(self, _):
+        r = self.client.patch(self.URL, {"email": "SELFP@example.com"}, format="json")
+        self.assertEqual(r.status_code, 200)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.email_verified)
+        self.assertEqual(mail.outbox, [])
+
+    def test_staff_cannot_change_own_email_but_can_phone(self, _):
+        doc = User.objects.create_user(username="docself", password=STRONG_PASSWORD, role=Role.DOCTOR,
+                                       email="docself@example.com", email_verified=True)
+        self.client.force_authenticate(doc)
+        r = self.client.patch(self.URL, {"email": "x@example.com", "current_password": STRONG_PASSWORD}, format="json")
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(self.client.patch(self.URL, {"phone": "+998901234567", "address": "x"},
+                                           format="json").status_code, 200)
+        doc.refresh_from_db()
+        self.assertEqual((doc.email, doc.phone), ("docself@example.com", "+998901234567"))
+
+    def test_anonymous_rejected(self, _):
+        self.client.force_authenticate(None)
+        self.assertEqual(self.client.patch(self.URL, {"phone": "+998901234567"}, format="json").status_code, 401)
+
+
+@mock.patch.object(ScopedRateThrottle, "allow_request", return_value=True)
+class PasswordChangeTests(APITestCase):
+    """Tizimga kirgan foydalanuvchi parolini almashtiradi: joriy parol (va 2FA kodi) so'raladi,
+    boshqa qurilmalar chiqariladi, joriy qurilma qoladi, emailga ogohlantirish boradi."""
+
+    URL = "/api/auth/password/change/"
+    NEW = "Zr4!mKq8#wTp2v"
+
+    def setUp(self):
+        cache.clear()
+        mail.outbox = []
+        patcher = mock.patch("users.views.transaction.on_commit", side_effect=lambda fn: fn())
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.user = User.objects.create_user(username="pwch", password=STRONG_PASSWORD, role=Role.PATIENT,
+                                             email="pwch@example.com", email_verified=True)
+
+    def login(self, ip):
+        self.client.credentials()
+        r = self.client.post(LOGIN_URL, {"username": "pwch", "password": STRONG_PASSWORD}, format="json",
+                             REMOTE_ADDR=ip)
+        self.assertEqual(r.status_code, 200, r.content)
+        return r.data["access"]
+
+    def body(self, **kw):
+        return {"current_password": STRONG_PASSWORD, "new_password": self.NEW, "new_password_confirm": self.NEW, **kw}
+
+    def test_change_keeps_current_device_and_signs_out_others(self, _):
+        from records.models import AuditLog
+        other = self.login("10.0.0.2")
+        mine = self.login("10.0.0.1")
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {mine}")
+        r = self.client.post(self.URL, self.body(), format="json")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.data["revoked"], 1)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password(self.NEW))
+        self.assertEqual(self.client.get("/api/auth/me/").status_code, 200)          # joriy qurilma qoldi
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {other}")
+        self.assertEqual(self.client.get("/api/auth/me/").status_code, 401)          # boshqasi chiqarildi
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn("parol o'zgartirildi", mail.outbox[0].subject)
+        self.assertNotIn(self.NEW, mail.outbox[0].body)
+        self.assertTrue(AuditLog.objects.filter(actor=self.user, detail__startswith="Parol o'zgartirildi").exists())
+
+    def test_wrong_current_password(self, _):
+        self.client.force_authenticate(self.user)
+        r = self.client.post(self.URL, self.body(current_password="nope"), format="json")
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("current_password", r.json())
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password(STRONG_PASSWORD))
+
+    def test_mismatch_weak_and_same_password_rejected(self, _):
+        self.client.force_authenticate(self.user)
+        self.assertIn("new_password_confirm", self.client.post(
+            self.URL, self.body(new_password_confirm="Other!Passw0rd9"), format="json").json())
+        self.assertIn("new_password", self.client.post(
+            self.URL, self.body(new_password="12345678", new_password_confirm="12345678"), format="json").json())
+        self.assertIn("new_password", self.client.post(
+            self.URL, self.body(new_password=STRONG_PASSWORD, new_password_confirm=STRONG_PASSWORD), format="json").json())
+
+    def test_mfa_code_required_when_enabled(self, _):
+        from . import mfa
+        from .models import TwoFactorDevice
+        from django.utils import timezone
+        secret = mfa.new_secret()
+        TwoFactorDevice.objects.create(user=self.user, secret=secret, confirmed_at=timezone.now())
+        self.user.is_active_2fa = True
+        self.user.save(update_fields=["is_active_2fa"])
+        self.client.force_authenticate(self.user)
+        r = self.client.post(self.URL, self.body(code="000000"), format="json")
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("code", r.json())
+        code = mfa.totp_at(secret, mfa.current_step())
+        r = self.client.post(self.URL, self.body(code=code), format="json")
+        self.assertEqual(r.status_code, 200, r.content)
+
+    def test_no_notice_for_unverified_email(self, _):
+        self.user.email_verified = False
+        self.user.save(update_fields=["email_verified"])
+        self.client.force_authenticate(self.user)
+        self.assertEqual(self.client.post(self.URL, self.body(), format="json").status_code, 200)
+        self.assertEqual(mail.outbox, [])
+
+    def test_anonymous_rejected(self, _):
+        self.assertEqual(self.client.post(self.URL, self.body(), format="json").status_code, 401)

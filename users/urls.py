@@ -19,6 +19,7 @@ urlpatterns = [
     path("sessions/revoke-others/", views.SessionRevokeOthersView.as_view(), name="sessions-revoke-others"),
     path("logout/", views.LogoutView.as_view(), name="logout"),
     path("me/", views.MeView.as_view(), name="me"),
+    path("password/change/", views.PasswordChangeView.as_view(), name="password-change"),
     path("email/send-code/", views.EmailSendCodeView.as_view(), name="email-send-code"),
     path("email/verify/", views.EmailVerifyView.as_view(), name="email-verify"),
     path("users/", views.AdminUserListCreateView.as_view(), name="admin-users"),

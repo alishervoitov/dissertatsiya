@@ -67,3 +67,17 @@ def send_verification_email(user_email, full_name, code):
         from_email=settings.DEFAULT_FROM_EMAIL,
         recipient_list=[user_email],
     )
+
+
+@shared_task
+def send_security_notice(user_email, full_name, subject, body):
+    """Hisob xavfsizligi haqida ogohlantirish (parol yoki email o'zgardi). Xatda tibbiy ma'lumot yo'q."""
+    send_mail(
+        subject=f"ShifoSafe — {subject}",
+        message=(
+            f"Salom, {full_name}!\n\n{body}\n\n"
+            f"Agar buni siz qilmagan bo'lsangiz, darhol parolingizni tiklang va registraturaga murojaat qiling."
+        ),
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        recipient_list=[user_email],
+    )

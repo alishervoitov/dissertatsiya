@@ -113,14 +113,17 @@ def record_register_taken(ident):
     return _increment(_register_taken_key(ident), REGISTER_TAKEN_WINDOW)
 
 
-def revoke_refresh_tokens(user):
-    """Foydalanuvchining amaldagi barcha refresh tokenlarini blacklist qiladi (7-band); sonini qaytaradi."""
+def revoke_refresh_tokens(user, keep_jti=None):
+    """Foydalanuvchining amaldagi barcha refresh tokenlarini blacklist qiladi (7-band); sonini qaytaradi.
+    keep_jti - shu token (joriy qurilma) qoldiriladi."""
     from django.utils import timezone
     from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
 
     active = OutstandingToken.objects.filter(
         user=user, expires_at__gt=timezone.now(), blacklistedtoken__isnull=True
     )
+    if keep_jti:
+        active = active.exclude(jti=keep_jti)
     active = list(active)
     created = BlacklistedToken.objects.bulk_create(
         [BlacklistedToken(token=token) for token in active], ignore_conflicts=True

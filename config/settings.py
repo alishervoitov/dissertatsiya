@@ -176,6 +176,9 @@ REST_FRAMEWORK = {
         "mfa_manage": "30/hour",
         # Emailni tasdiqlash: kod kiritish va qayta yuborish (kodning o'z cheklovlari ham bor)
         "email_verify": "30/hour",
+        # O'z profilini tahrirlash va parolni almashtirish (joriy parolni taxmin qilishga qarshi)
+        "profile_update": "30/hour",
+        "password_change": "10/hour",
     },
     "DEFAULT_RENDERER_CLASSES": (
         "rest_framework.renderers.JSONRenderer",

@@ -147,3 +147,15 @@ def backup_code_login(user, ident, remaining):
         f"Agar bu siz bo'lmasangiz - hisobni darhol bloklang.\n"
         f"{_now_local()}"
     )
+
+
+def staff_email_changed(admin, user, old_masked, new_masked):
+    """Xodim emaili almashtirildi: yangi emailga parol tiklash xati borishi mumkin - hisobni egallash belgisi."""
+    return notify(
+        f"🟠 <b>ShifoSafe: xodim emaili o'zgartirildi</b>\n"
+        f"Hisob: <code>{esc(user.username, 64)}</code> ({esc(user.role, 20)})\n"
+        f"Kim o'zgartirdi: <code>{esc(admin.username, 64)}</code>\n"
+        f"{esc(old_masked, 120)} → {esc(new_masked, 120)}\n"
+        f"Agar bu rejalashtirilmagan bo'lsa - hisobni tekshiring.\n"
+        f"{_now_local()}"
+    )

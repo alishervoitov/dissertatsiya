@@ -1166,3 +1166,55 @@ class EmailRequirementTests(APITestCase):
         self.client.force_authenticate(self.admin)
         r = self.client.patch(f"{ADMIN_USERS_URL}{p.id}/", {"email": ""}, format="json")
         self.assertEqual(r.status_code, status.HTTP_200_OK, r.content)
+
+    @mock.patch("monitoring.notify.staff_email_changed")
+    def test_admin_email_change_is_audited_and_alerted(self, alert, _):
+        from records.models import AuditLog
+
+        doc = User.objects.create_user(username="doc_chg", password=STRONG_PASSWORD, role=Role.DOCTOR,
+                                       email="doc_chg@example.com")
+        token = default_token_generator.make_token(doc)
+        self.client.force_authenticate(self.admin)
+        r = self.client.patch(f"{ADMIN_USERS_URL}{doc.id}/", {"email": "new_doc@example.com"}, format="json")
+        self.assertEqual(r.status_code, status.HTTP_200_OK, r.content)
+        entry = AuditLog.objects.filter(actor=self.admin, detail__startswith="Email o'zgartirildi: doc_chg").get()
+        self.assertIn("d***@example.com", entry.detail)
+        self.assertIn("n***@example.com", entry.detail)
+        self.assertNotIn("doc_chg@example.com", entry.detail)  # to'liq email jurnalga yozilmaydi
+        alert.assert_called_once()
+        # Eski emailga yuborilgan tiklash havolasi endi ishlamaydi
+        doc.refresh_from_db()
+        self.assertFalse(default_token_generator.check_token(doc, token))
+
+    @mock.patch("monitoring.notify.staff_email_changed")
+    def test_patient_email_change_audited_without_telegram(self, alert, _):
+        from records.models import AuditLog
+
+        p = User.objects.create_user(username="pt_chg", password=STRONG_PASSWORD, role=Role.PATIENT)
+        self.client.force_authenticate(self.admin)
+        r = self.client.patch(f"{ADMIN_USERS_URL}{p.id}/", {"email": "pt_chg@example.com"}, format="json")
+        self.assertEqual(r.status_code, status.HTTP_200_OK, r.content)
+        self.assertTrue(AuditLog.objects.filter(detail__startswith="Email o'zgartirildi: pt_chg").exists())
+        alert.assert_not_called()
+
+    @mock.patch("monitoring.notify.staff_email_changed")
+    def test_unchanged_email_not_logged(self, alert, _):
+        from records.models import AuditLog
+
+        doc = User.objects.create_user(username="doc_same", password=STRONG_PASSWORD, role=Role.DOCTOR,
+                                       email="doc_same@example.com")
+        self.client.force_authenticate(self.admin)
+        self.client.patch(f"{ADMIN_USERS_URL}{doc.id}/", {"email": "DOC_SAME@example.com "}, format="json")
+        self.assertFalse(AuditLog.objects.filter(detail__startswith="Email o'zgartirildi: doc_same").exists())
+        alert.assert_not_called()
+
+    def test_non_admin_cannot_change_email(self, _):
+        doc = User.objects.create_user(username="doc_x", password=STRONG_PASSWORD, role=Role.DOCTOR,
+                                       email="doc_x@example.com")
+        other = User.objects.create_user(username="doc_y", password=STRONG_PASSWORD, role=Role.DOCTOR,
+                                         email="doc_y@example.com")
+        self.client.force_authenticate(other)
+        r = self.client.patch(f"{ADMIN_USERS_URL}{doc.id}/", {"email": "evil@example.com"}, format="json")
+        self.assertEqual(r.status_code, status.HTTP_403_FORBIDDEN)
+        doc.refresh_from_db()
+        self.assertEqual(doc.email, "doc_x@example.com")

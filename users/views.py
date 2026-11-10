@@ -10,9 +10,9 @@ from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from .avatar import AvatarError, delete_old_avatar, process_avatar
 from . import sessions
 from .auth_cookies import clear_refresh_cookie, csrf_header_ok, move_refresh_to_cookie, read_refresh, set_refresh_cookie
-from .models import LoginSession, User
+from .models import LoginSession, Role, User
 from .permissions import IsAdmin
-from .security import client_ident, record_register_taken, register_taken_exceeded, revoke_refresh_tokens
+from .security import client_ident, mask_email, record_register_taken, register_taken_exceeded, revoke_refresh_tokens
 from .tasks import request_password_reset
 from .serializers import (
     AdminCreateUserSerializer,
@@ -174,12 +174,32 @@ class AdminUserDetailView(generics.RetrieveUpdateDestroyAPIView):
 
     def perform_update(self, serializer):
         before = serializer.instance.is_active
+        old_email = serializer.instance.email
         user = serializer.save()
         if before != user.is_active:
             security_logger.info(
                 "Administrator %s hisobni %s: %s",
                 self.request.user.username, "faollashtirdi" if user.is_active else "faolsizlantirdi", user.username,
             )
+        if old_email != user.email:
+            self._email_changed(user, old_email)
+
+    def _email_changed(self, user, old_email):
+        """Emailni almashtirish hisobni egallash yo'li bo'lishi mumkin (yangi emailga parol tiklash xati
+        boradi), shuning uchun har bir o'zgarish audit jurnaliga, xodim hisobida esa Telegram'ga ham yoziladi.
+        Eski parol tiklash havolalari o'z-o'zidan bekor bo'ladi: Django tokeni emailni ham xeshlaydi."""
+        from monitoring import notify
+        from records.audit import log_audit
+
+        def masked(e):
+            return mask_email(e) if e else "—"
+
+        admin = self.request.user
+        log_audit(admin, "update", detail=f"Email o'zgartirildi: {user.username} ({masked(old_email)} → {masked(user.email)})")
+        security_logger.warning("Administrator %s %s hisobining emailini o'zgartirdi: %s -> %s",
+                                admin.username, user.username, masked(old_email), masked(user.email))
+        if user.role != Role.PATIENT and user.pk != admin.pk:
+            notify.staff_email_changed(admin, user, masked(old_email), masked(user.email))
 
 from rest_framework.parsers import MultiPartParser, FormParser
 

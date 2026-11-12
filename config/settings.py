@@ -97,6 +97,11 @@ DATABASES = {
         "PASSWORD": os.environ.get("DB_PASSWORD", ""),
         "HOST": os.environ.get("DB_HOST", "127.0.0.1"),
         "PORT": os.environ.get("DB_PORT", "5432"),
+        # Ulanish har so'rovda qayta ochilmaydi: har bir gunicorn oqimi o'z ulanishini 60 soniya saqlaydi
+        # (3 jarayon x 4 oqim = ko'pi bilan 12 ta, PostgreSQL chegarasi 100). Ishlatishdan oldin ulanish
+        # tirikligi tekshiriladi, shuning uchun baza qayta ishga tushsa birinchi so'rov xato bermaydi.
+        "CONN_MAX_AGE": int(os.environ.get("DB_CONN_MAX_AGE", "60")),
+        "CONN_HEALTH_CHECKS": True,
     }
 }
 

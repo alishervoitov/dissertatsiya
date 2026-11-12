@@ -19,4 +19,8 @@ echo "PostgreSQL tayyor."
 python manage.py migrate --noinput
 python manage.py collectstatic --noinput --clear
 
-exec gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 3
+# 3 jarayon x 4 oqim = bir vaqtda 12 ta so'rov. Avval 3 ta edi: bitta sekin so'rov (PDF, parol xeshi,
+# fayl yuklash) butun jarayonni band qilib, qolganlar navbatda kutardi. Oqimlar xotirani deyarli oshirmaydi.
+# Sonlarni .env.docker orqali o'zgartirish mumkin (GUNICORN_WORKERS, GUNICORN_THREADS).
+exec gunicorn config.wsgi:application --bind 0.0.0.0:8000 \
+    --worker-class gthread --workers "${GUNICORN_WORKERS:-3}" --threads "${GUNICORN_THREADS:-4}"
